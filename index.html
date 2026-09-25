@@ -1,0 +1,1603 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>单词复习助手</title>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --primary: #4A90E2; --primary-dark: #357ABD; --secondary: #7B68EE;
+            --success: #52C41A; --warning: #FAAD14; --danger: #FF4D4F;
+            --bg: #F5F7FA; --card: #FFFFFF; --text: #333; --text-light: #666;
+            --border: #E8E8E8; --shadow: 0 2px 12px rgba(0,0,0,0.08);
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            background: var(--bg); color: var(--text); min-height: 100vh;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        /* ====== 认证界面 ====== */
+        #auth-screen {
+            display: flex; align-items: center; justify-content: center;
+            min-height: 100vh; background: linear-gradient(135deg, var(--primary), var(--secondary));
+        }
+        .auth-card {
+            background: white; border-radius: 16px; padding: 40px; width: 90%;
+            max-width: 420px; box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+        }
+        .auth-logo {
+            text-align: center; font-size: 48px; margin-bottom: 8px;
+        }
+        .auth-title {
+            text-align: center; font-size: 24px; font-weight: 700;
+            margin-bottom: 24px; color: var(--text);
+        }
+        .auth-tabs {
+            display: flex; margin-bottom: 24px; border-radius: 8px;
+            overflow: hidden; border: 1px solid var(--border);
+        }
+        .auth-tab {
+            flex: 1; padding: 12px; text-align: center; cursor: pointer;
+            font-size: 15px; font-weight: 500; transition: all 0.3s; background: white;
+        }
+        .auth-tab.active {
+            background: var(--primary); color: white;
+        }
+        .auth-form .form-group { margin-bottom: 16px; }
+        .auth-form .form-label {
+            display: block; margin-bottom: 6px; font-weight: 500; font-size: 14px;
+        }
+        .auth-form .form-input {
+            width: 100%; padding: 12px 14px; border: 1px solid var(--border);
+            border-radius: 8px; font-size: 15px; outline: none; transition: border-color 0.3s;
+        }
+        .auth-form .form-input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(74,144,226,0.1);
+        }
+        .auth-submit {
+            width: 100%; padding: 14px; background: var(--primary); color: white;
+            border: none; border-radius: 8px; font-size: 16px; font-weight: 600;
+            cursor: pointer; transition: all 0.3s; margin-top: 8px;
+        }
+        .auth-submit:hover { background: var(--primary-dark); }
+        .auth-submit:disabled { opacity: 0.6; cursor: not-allowed; }
+        .auth-error {
+            color: var(--danger); font-size: 13px; margin-top: 10px;
+            min-height: 20px; text-align: center;
+        }
+        .auth-msg {
+            color: var(--success); font-size: 13px; margin-top: 10px;
+            min-height: 20px; text-align: center;
+        }
+
+        /* ====== 导航栏 ====== */
+        .navbar {
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            padding: 0 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            position: sticky; top: 0; z-index: 100;
+        }
+        .nav-content {
+            max-width: 1200px; margin: 0 auto; display: flex;
+            justify-content: space-between; align-items: center; height: 56px;
+        }
+        .logo {
+            color: white; font-size: 20px; font-weight: bold;
+            display: flex; align-items: center; gap: 8px;
+        }
+        .nav-right { display: flex; align-items: center; gap: 12px; }
+        .nav-links { display: flex; gap: 6px; }
+        .nav-btn {
+            background: rgba(255,255,255,0.2); border: none; color: white;
+            padding: 8px 16px; border-radius: 20px; cursor: pointer;
+            font-size: 13px; transition: all 0.3s;
+        }
+        .nav-btn:hover, .nav-btn.active { background: rgba(255,255,255,0.35); }
+        .user-email {
+            color: rgba(255,255,255,0.85); font-size: 12px;
+            max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .logout-btn {
+            background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3);
+            color: white; padding: 5px 12px; border-radius: 14px;
+            cursor: pointer; font-size: 12px; transition: all 0.3s;
+        }
+        .logout-btn:hover { background: rgba(255,255,255,0.3); }
+
+        /* ====== 主容器 ====== */
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        .page { display: none; }
+        .page.active { display: block; }
+
+        .card {
+            background: var(--card); border-radius: 12px;
+            box-shadow: var(--shadow); padding: 24px; margin-bottom: 20px;
+        }
+        .card-title {
+            font-size: 18px; font-weight: 600; margin-bottom: 16px;
+            display: flex; align-items: center; gap: 8px;
+        }
+
+        /* ====== 表单 ====== */
+        .form-group { margin-bottom: 16px; }
+        .form-label { display: block; margin-bottom: 6px; font-weight: 500; }
+        .form-input, .form-textarea {
+            width: 100%; padding: 10px 14px; border: 1px solid var(--border);
+            border-radius: 8px; font-size: 14px; outline: none; transition: border-color 0.3s;
+        }
+        .form-input:focus, .form-textarea:focus {
+            border-color: var(--primary); box-shadow: 0 0 0 3px rgba(74,144,226,0.1);
+        }
+        .form-textarea { min-height: 80px; resize: vertical; }
+
+        /* ====== 按钮 ====== */
+        .btn {
+            display: inline-flex; align-items: center; justify-content: center;
+            gap: 6px; padding: 10px 20px; border: none; border-radius: 8px;
+            font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.3s;
+        }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-primary:hover { background: var(--primary-dark); }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-outline {
+            background: transparent; border: 1px solid var(--primary); color: var(--primary);
+        }
+        .btn-outline:hover { background: var(--primary); color: white; }
+        .btn-sm { padding: 6px 12px; font-size: 12px; }
+        .btn-lg { padding: 14px 32px; font-size: 16px; }
+
+        /* ====== 标签输入 ====== */
+        .tags-container {
+            display: flex; flex-wrap: wrap; gap: 8px; padding: 8px;
+            border: 1px solid var(--border); border-radius: 8px;
+            min-height: 42px; cursor: text;
+        }
+        .tag {
+            background: var(--primary); color: white; padding: 4px 10px;
+            border-radius: 16px; font-size: 13px;
+            display: flex; align-items: center; gap: 6px;
+        }
+        .tag-remove { cursor: pointer; opacity: 0.7; font-size: 16px; }
+        .tag-remove:hover { opacity: 1; }
+        .tag-input {
+            border: none; outline: none; font-size: 14px;
+            min-width: 100px; flex: 1;
+        }
+
+        /* ====== 区分词/词根词输入 ====== */
+        .distinguish-item, .root-word-item {
+            display: flex; gap: 10px; margin-bottom: 10px; align-items: center;
+        }
+        .distinguish-item input, .root-word-item input { flex: 1; }
+        .remove-dist, .remove-root {
+            background: none; border: none; color: var(--danger);
+            cursor: pointer; font-size: 20px; padding: 4px;
+        }
+
+        .date-selector { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+        .date-input {
+            padding: 10px 14px; border: 1px solid var(--border);
+            border-radius: 8px; font-size: 14px;
+        }
+
+        /* ====== 单词列表 ====== */
+        .word-list { display: grid; gap: 12px; }
+        .word-item {
+            background: var(--card); border-radius: 10px; padding: 16px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+            display: flex; justify-content: space-between; align-items: center;
+            transition: transform 0.2s;
+        }
+        .word-item:hover { transform: translateX(4px); }
+        .word-info { flex: 1; }
+        .word-text { font-size: 18px; font-weight: 600; color: var(--primary); }
+        .word-meaning { font-size: 14px; color: var(--text-light); margin-top: 4px; }
+        .word-meta { font-size: 12px; color: #999; margin-top: 4px; }
+        .word-actions { display: flex; gap: 8px; }
+
+        /* ====== 复习选择 ====== */
+        .review-modes {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px; margin-bottom: 30px;
+        }
+        .mode-card {
+            background: var(--card); border-radius: 12px; padding: 24px;
+            text-align: center; box-shadow: var(--shadow); cursor: pointer;
+            transition: all 0.3s; border: 2px solid transparent;
+        }
+        .mode-card:hover {
+            transform: translateY(-4px); border-color: var(--primary);
+            box-shadow: 0 8px 24px rgba(74,144,226,0.15);
+        }
+        .mode-icon { font-size: 48px; margin-bottom: 16px; }
+        .mode-title { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+        .mode-desc { font-size: 14px; color: var(--text-light); }
+        .mode-count { margin-top: 12px; font-size: 24px; font-weight: bold; color: var(--primary); }
+
+        /* ====== 日历 ====== */
+        .calendar-grid {
+            display: grid; grid-template-columns: repeat(7, 1fr);
+            gap: 8px; margin-top: 16px;
+        }
+        .calendar-header {
+            text-align: center; font-weight: 600; color: var(--text-light); padding: 8px;
+        }
+        .calendar-day {
+            aspect-ratio: 1; display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            border-radius: 8px; cursor: pointer; transition: all 0.2s;
+            font-size: 14px; position: relative;
+        }
+        .calendar-day:hover { background: rgba(74,144,226,0.1); }
+        .calendar-day.has-words {
+            background: rgba(74,144,226,0.08); font-weight: 600;
+        }
+        .calendar-day.has-words::after {
+            content: attr(data-count); position: absolute; bottom: 2px;
+            font-size: 10px; color: var(--primary);
+        }
+        .calendar-day.today { border: 2px solid var(--primary); }
+
+        /* ====== 复习展示 ====== */
+        .review-container { max-width: 800px; margin: 0 auto; }
+        .review-header {
+            display: flex; justify-content: space-between;
+            align-items: center; margin-bottom: 24px;
+        }
+        .review-progress { font-size: 16px; color: var(--text-light); }
+        .review-counter { font-weight: 600; color: var(--primary); }
+
+        .word-display {
+            background: var(--card); border-radius: 16px; padding: 48px 32px;
+            text-align: center; box-shadow: var(--shadow); margin-bottom: 24px;
+            min-height: 200px; display: flex; flex-direction: column; justify-content: center;
+            cursor: pointer;
+        }
+        .main-word {
+            font-size: 48px; font-weight: 700; color: var(--primary); margin-bottom: 16px;
+        }
+        .meaning-display {
+            font-size: 20px; color: var(--text); line-height: 1.6;
+            visibility: hidden; height: 0; overflow: hidden;
+        }
+        .meaning-display.show {
+            visibility: visible; height: auto; overflow: visible;
+            margin-top: 16px;
+        }
+        .hint-text { font-size: 14px; color: #999; margin-top: 16px; }
+
+        /* ====== 侧边信息 ====== */
+        .side-info {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px; margin-bottom: 24px;
+        }
+        .info-box {
+            background: var(--card); border-radius: 12px;
+            padding: 20px; box-shadow: var(--shadow);
+        }
+        .info-title {
+            font-size: 14px; font-weight: 600; color: var(--text-light);
+            margin-bottom: 12px; display: flex; align-items: center;
+            gap: 6px; cursor: pointer;
+        }
+        .info-title .badge {
+            background: var(--warning); color: white; font-size: 12px;
+            padding: 2px 8px; border-radius: 10px;
+        }
+        .info-content {
+            display: none; font-size: 15px; line-height: 1.8;
+        }
+        .info-content.show { display: block; }
+        .synonym-item, .dist-item {
+            padding: 8px 10px; border-bottom: 1px solid var(--border);
+            cursor: pointer; transition: background 0.2s; border-radius: 4px;
+        }
+        .synonym-item:hover, .dist-item:hover { background: rgba(74,144,226,0.05); }
+        .synonym-item:last-child, .dist-item:last-child { border-bottom: none; }
+        .dist-word { font-weight: 600; color: var(--text); }
+        .dist-meaning {
+            color: var(--text-light); font-size: 13px; max-height: 0;
+            overflow: hidden; transition: all 0.3s; opacity: 0; margin-top: 0;
+        }
+        .dist-meaning.show {
+            max-height: 100px; opacity: 1; margin-top: 6px;
+        }
+
+        /* ====== 导航按钮 ====== */
+        .review-nav {
+            display: flex; justify-content: center; gap: 16px; margin-bottom: 16px;
+        }
+        .nav-arrow {
+            width: 48px; height: 48px; border-radius: 50%;
+            border: 2px solid var(--primary); background: white;
+            color: var(--primary); font-size: 20px; cursor: pointer;
+            transition: all 0.3s;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .nav-arrow:hover { background: var(--primary); color: white; }
+        .nav-arrow.speaking { animation: pulse 1s infinite; }
+        @keyframes pulse {
+            0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); }
+        }
+
+        .keyboard-hints {
+            display: flex; justify-content: center; gap: 20px;
+            margin-top: 16px; flex-wrap: wrap;
+        }
+        .key-hint {
+            display: flex; align-items: center; gap: 6px;
+            font-size: 13px; color: var(--text-light);
+        }
+        .key {
+            background: var(--bg); border: 1px solid var(--border);
+            border-radius: 4px; padding: 2px 8px;
+            font-family: monospace; font-size: 12px;
+        }
+
+        /* ====== 手机端底部操作栏 ====== */
+        .mobile-controls {
+            display: none; flex-direction: column; gap: 10px;
+            padding: 12px 16px 16px; background: white;
+            border-top: 1px solid var(--border);
+            position: fixed; bottom: 0; left: 0; right: 0;
+            box-shadow: 0 -2px 10px rgba(0,0,0,0.08); z-index: 50;
+        }
+        .mobile-nav { display: flex; justify-content: space-around; align-items: center; }
+        .mobile-btn {
+            background: var(--bg); border: 1px solid var(--border);
+            border-radius: 10px; padding: 10px 16px; font-size: 13px;
+            text-align: center; cursor: pointer; transition: all 0.15s;
+            user-select: none; -webkit-user-select: none;
+        }
+        .mobile-btn:active {
+            background: #e0e0e0; transform: scale(0.95);
+        }
+        .mobile-btn .btn-icon { font-size: 22px; display: block; margin-bottom: 2px; }
+        .mobile-features {
+            display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+        }
+        .mobile-features .mobile-btn {
+            padding: 8px 4px; font-size: 11px;
+        }
+        .mobile-features .btn-icon { font-size: 18px; margin-bottom: 0; }
+
+        /* ====== 统计 ====== */
+        .stats-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 16px;
+        }
+        .stat-card {
+            background: var(--card); border-radius: 10px; padding: 16px;
+            text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+        }
+        .stat-number { font-size: 32px; font-weight: bold; color: var(--primary); }
+        .stat-label { font-size: 13px; color: var(--text-light); margin-top: 4px; }
+
+        .empty-state {
+            text-align: center; padding: 48px 20px; color: var(--text-light);
+        }
+        .empty-icon { font-size: 64px; margin-bottom: 16px; }
+        .empty-text { font-size: 16px; margin-bottom: 16px; }
+
+        /* ====== 提示框 ====== */
+        .toast {
+            position: fixed; bottom: 20px; right: 20px;
+            background: var(--text); color: white; padding: 12px 24px;
+            border-radius: 8px; font-size: 14px; z-index: 1000;
+            opacity: 0; transform: translateY(20px); transition: all 0.3s;
+        }
+        .toast.show { opacity: 1; transform: translateY(0); }
+
+        /* ====== 模态框 ====== */
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5); display: none;
+            align-items: center; justify-content: center; z-index: 200;
+        }
+        .modal-overlay.show { display: flex; }
+        .modal {
+            background: var(--card); border-radius: 12px; padding: 24px;
+            max-width: 600px; width: 92%; max-height: 85vh; overflow-y: auto;
+        }
+        .modal-title { font-size: 18px; font-weight: 600; margin-bottom: 16px; }
+
+        /* ====== 加载中 ====== */
+        .loading-overlay {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(255,255,255,0.8); display: none;
+            align-items: center; justify-content: center;
+            z-index: 300; font-size: 18px; color: var(--primary);
+        }
+        .loading-overlay.show { display: flex; }
+
+        /* ====== 响应式 ====== */
+        @media (max-width: 768px) {
+            .nav-content {
+                flex-direction: column; height: auto; padding: 10px 0; gap: 8px;
+            }
+            .container { padding: 12px; }
+            .side-info { grid-template-columns: 1fr; }
+            .main-word { font-size: 36px; }
+            .word-display { padding: 32px 20px; }
+            .card { padding: 16px; }
+            .keyboard-hints { display: none !important; }
+            .review-nav { display: none; }
+            .review-container { padding-bottom: 180px; }
+            .mobile-controls { display: flex; }
+            .user-email { display: none; }
+        }
+        @media (max-width: 400px) {
+            .main-word { font-size: 28px; }
+            .meaning-display { font-size: 17px; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ====== 认证界面 ====== -->
+    <div id="auth-screen">
+        <div class="auth-card">
+            <div class="auth-logo">📚</div>
+            <div class="auth-title">单词复习助手</div>
+            <div class="auth-tabs">
+                <div class="auth-tab active" id="tab-login" onclick="switchAuthTab('login')">登录</div>
+                <div class="auth-tab" id="tab-signup" onclick="switchAuthTab('signup')">注册</div>
+            </div>
+            <div class="auth-form">
+                <div class="form-group">
+                    <label class="form-label">邮箱</label>
+                    <input type="email" id="auth-email" class="form-input" placeholder="请输入邮箱">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">密码</label>
+                    <input type="password" id="auth-password" class="form-input" placeholder="请输入密码（至少6位）">
+                </div>
+                <button class="auth-submit" id="auth-submit-btn" onclick="handleAuth()">登录</button>
+                <div class="auth-error" id="auth-error"></div>
+                <div class="auth-msg" id="auth-msg"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ====== 主应用 ====== -->
+    <div id="main-app" style="display:none">
+        <nav class="navbar">
+            <div class="nav-content">
+                <div class="logo">📚 单词复习助手</div>
+                <div class="nav-right">
+                    <div class="nav-links">
+                        <button class="nav-btn active" onclick="showPage('import', this)">📝 导入</button>
+                        <button class="nav-btn" onclick="showPage('review', this)">🎯 复习</button>
+                        <button class="nav-btn" onclick="showPage('stats', this)">📊 统计</button>
+                    </div>
+                    <div class="user-email" id="user-email"></div>
+                    <button class="logout-btn" onclick="signOut()">退出</button>
+                </div>
+            </div>
+        </nav>
+
+        <div class="container">
+            <!-- 导入页面 -->
+            <div id="page-import" class="page active">
+                <div class="card">
+                    <div class="card-title">📅 选择日期</div>
+                    <div class="date-selector">
+                        <input type="date" id="import-date" class="date-input">
+                        <button class="btn btn-outline btn-sm" onclick="setToday()">今天</button>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">📝 添加新单词</div>
+                    <div class="form-group">
+                        <label class="form-label">单词 *</label>
+                        <input type="text" id="word-input" class="form-input" placeholder="输入英文单词" autocomplete="off">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">释义 *</label>
+                        <textarea id="meaning-input" class="form-textarea" placeholder="输入单词的中文意思，可以多行输入"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">同义词 <span style="font-weight:normal;color:#999">(按回车添加)</span></label>
+                        <div class="tags-container" id="synonyms-container" onclick="this.querySelector('input').focus()">
+                            <input type="text" class="tag-input" id="synonym-input" placeholder="输入同义词后按回车">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">需要区分的词</label>
+                        <div id="distinguish-list"></div>
+                        <button class="btn btn-outline btn-sm" onclick="addDistinguishField()" style="margin-top:8px">+ 添加区分词</button>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">同词根词</label>
+                        <div id="root-words-list"></div>
+                        <button class="btn btn-outline btn-sm" onclick="addRootWordField()" style="margin-top:8px">+ 添加同词根词</button>
+                    </div>
+                    <div style="display:flex;gap:10px;margin-top:20px">
+                        <button class="btn btn-primary btn-lg" id="save-word-btn" onclick="saveWord()" style="flex:1">💾 保存单词</button>
+                        <button class="btn btn-outline btn-lg" onclick="clearForm()">🔄 清空</button>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">📋 已导入的单词 <span id="word-list-count" style="font-size:13px;color:#999;font-weight:normal"></span></div>
+                    <div id="word-list" class="word-list"></div>
+                </div>
+            </div>
+
+            <!-- 复习选择页面 -->
+            <div id="page-review" class="page">
+                <div class="card">
+                    <div class="card-title">🎯 选择复习模式</div>
+                    <div class="review-modes">
+                        <div class="mode-card" onclick="startSmartReview()">
+                            <div class="mode-icon">🧠</div>
+                            <div class="mode-title">智能复习</div>
+                            <div class="mode-desc">基于艾宾浩斯遗忘曲线，自动推荐今天该复习的单词</div>
+                            <div class="mode-count" id="smart-count">-</div>
+                        </div>
+                        <div class="mode-card" onclick="showDateReview()">
+                            <div class="mode-icon">📅</div>
+                            <div class="mode-title">按日期复习</div>
+                            <div class="mode-desc">选择特定日期导入的单词进行复习</div>
+                            <div class="mode-count" id="total-count">-</div>
+                        </div>
+                    </div>
+                </div>
+                <div id="date-review-section" class="card" style="display:none">
+                    <div class="card-title">📅 选择日期复习</div>
+                    <div class="calendar-grid" id="calendar"></div>
+                </div>
+            </div>
+
+            <!-- 统计页面 -->
+            <div id="page-stats" class="page">
+                <div class="card">
+                    <div class="card-title">📊 学习统计</div>
+                    <div class="stats-grid">
+                        <div class="stat-card"><div class="stat-number" id="stat-total">0</div><div class="stat-label">总单词数</div></div>
+                        <div class="stat-card"><div class="stat-number" id="stat-today">0</div><div class="stat-label">今日新增</div></div>
+                        <div class="stat-card"><div class="stat-number" id="stat-reviewed">0</div><div class="stat-label">已复习</div></div>
+                        <div class="stat-card"><div class="stat-number" id="stat-today-review">0</div><div class="stat-label">今日待复习</div></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">📅 各日期单词数量</div>
+                    <div id="date-stats"></div>
+                </div>
+            </div>
+
+            <!-- 复习展示页面 -->
+            <div id="page-study" class="page">
+                <div class="review-container">
+                    <div class="review-header">
+                        <button class="btn btn-outline" onclick="exitReview()">← 返回</button>
+                        <div class="review-progress">
+                            <span class="review-counter" id="current-index">1</span> / <span id="total-words">0</span>
+                        </div>
+                    </div>
+
+                    <div class="word-display" id="word-display" onclick="toggleMeaning()">
+                        <div class="main-word" id="main-word">...</div>
+                        <div class="meaning-display" id="meaning-display">...</div>
+                        <div class="hint-text" id="hint-text">点击屏幕或按空格键显示释义</div>
+                    </div>
+
+                    <div class="side-info">
+                        <div class="info-box" id="synonym-box" style="display:none">
+                            <div class="info-title" onclick="toggleSynonyms()">
+                                📝 同义词 <span class="badge" id="synonym-count">0</span> 个
+                            </div>
+                            <div class="info-content" id="synonym-content"></div>
+                        </div>
+                        <div class="info-box" id="dist-box" style="display:none">
+                            <div class="info-title">
+                                ⚠️ 易混词 <span class="badge" id="dist-count">0</span> 个
+                            </div>
+                            <div class="info-content show" id="dist-content"></div>
+                        </div>
+                        <div class="info-box" id="root-box" style="display:none">
+                            <div class="info-title">
+                                🌱 同词根词 <span class="badge" id="root-count">0</span> 个
+                            </div>
+                            <div class="info-content show" id="root-content"></div>
+                        </div>
+                    </div>
+
+                    <!-- 电脑端导航 -->
+                    <div class="review-nav">
+                        <button class="nav-arrow" onclick="prevWord()" title="上一个 (←)">◀</button>
+                        <button class="nav-arrow" onclick="speakWord()" title="发音 (P)">🔊</button>
+                        <button class="nav-arrow" onclick="nextWord()" title="下一个 (→)">▶</button>
+                    </div>
+                    <div class="keyboard-hints">
+                        <div class="key-hint"><span class="key">←</span> 上一个</div>
+                        <div class="key-hint"><span class="key">→</span> 下一个</div>
+                        <div class="key-hint"><span class="key">Space</span> 显示释义</div>
+                        <div class="key-hint"><span class="key">P</span> 发音</div>
+                        <div class="key-hint"><span class="key">S</span> 同义词</div>
+                        <div class="key-hint"><span class="key">D</span> 易混词</div>
+                        <div class="key-hint"><span class="key">F</span> 同词根</div>
+                    </div>
+                </div>
+
+                <!-- 手机端底部操作栏 -->
+                <div class="mobile-controls" id="mobile-controls">
+                    <div class="mobile-nav">
+                        <div class="mobile-btn" onclick="prevWord()"><span class="btn-icon">◀</span>上一个</div>
+                        <div class="mobile-btn" onclick="speakWord()"><span class="btn-icon">🔊</span>发音</div>
+                        <div class="mobile-btn" onclick="nextWord()"><span class="btn-icon">▶</span>下一个</div>
+                    </div>
+                    <div class="mobile-features">
+                        <div class="mobile-btn" onclick="toggleMeaning()"><span class="btn-icon">👁️</span>释义</div>
+                        <div class="mobile-btn" onclick="toggleSynonyms()"><span class="btn-icon">📝</span>同义词</div>
+                        <div class="mobile-btn" onclick="showAllDistMeanings()"><span class="btn-icon">⚠️</span>易混词</div>
+                        <div class="mobile-btn" onclick="showAllRootMeanings()"><span class="btn-icon">🌱</span>同词根</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 编辑模态框 -->
+    <div class="modal-overlay" id="edit-modal">
+        <div class="modal">
+            <div class="modal-title">✏️ 编辑单词</div>
+            <div class="form-group">
+                <label class="form-label">单词</label>
+                <input type="text" id="edit-word" class="form-input">
+            </div>
+            <div class="form-group">
+                <label class="form-label">释义</label>
+                <textarea id="edit-meaning" class="form-textarea"></textarea>
+            </div>
+            <div class="form-group">
+                <label class="form-label">同义词 <span style="font-weight:normal;color:#999">(按回车添加)</span></label>
+                <div class="tags-container" id="edit-synonyms-container" onclick="this.querySelector('input').focus()">
+                    <input type="text" id="edit-synonym-input" placeholder="输入同义词后按回车">
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">需要区分的词</label>
+                <div id="edit-distinguish-list"></div>
+                <button class="btn btn-outline btn-sm" onclick="addEditDistinguishField()" style="margin-top:8px">+ 添加区分词</button>
+            </div>
+            <div class="form-group">
+                <label class="form-label">同词根词</label>
+                <div id="edit-root-words-list"></div>
+                <button class="btn btn-outline btn-sm" onclick="addEditRootWordField()" style="margin-top:8px">+ 添加同词根词</button>
+            </div>
+            <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
+                <button class="btn btn-outline" onclick="closeEditModal()">取消</button>
+                <button class="btn btn-primary" id="save-edit-btn" onclick="saveEdit()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 加载遮罩 -->
+    <div class="loading-overlay" id="loading">⏳ 加载中...</div>
+
+    <!-- 提示框 -->
+    <div class="toast" id="toast"></div>
+
+    <script>
+        // ==================== 配置区域 ====================
+        // ⚠️ 请将下面两个值替换为你自己的 Supabase 项目信息
+        const SUPABASE_URL = 'https://yqtkxpwtffiafevnkhlp.supabase.co/rest/v1/';
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlxdGt4cHd0ZmZpYWZldm5raGxwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAzMzE0NDgsImV4cCI6MjEwNTkwNzQ0OH0.DT_VlmRIVcTlCoeAFAjke1tmoIdNYYchawrC5YtWi0Q';
+        // =================================================
+
+        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        // ==================== 全局状态 ====================
+        let words = [];
+        let currentUser = null;
+        let currentEditId = null;
+        let studyWords = [];
+        let studyIndex = 0;
+        let meaningVisible = false;
+        const REVIEW_INTERVALS = [0, 1, 2, 4, 7, 15, 30, 60];
+
+        // ==================== 发音功能 ====================
+        const speechSynth = window.speechSynthesis;
+
+        function speakWord(text) {
+            if (!text) {
+                if (studyWords.length === 0) return;
+                text = studyWords[studyIndex].word;
+            }
+            speechSynth.cancel();
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'en-US';
+            utterance.rate = 0.9;
+            utterance.pitch = 1;
+            const voices = speechSynth.getVoices();
+            const usVoice = voices.find(v => v.lang === 'en-US' && v.name.includes('US')) || voices.find(v => v.lang === 'en-US');
+            if (usVoice) utterance.voice = usVoice;
+
+            const speakBtn = document.querySelector('.nav-arrow[title="发音 (P)"]');
+            utterance.onstart = () => { if (speakBtn) speakBtn.classList.add('speaking'); };
+            utterance.onend = () => { if (speakBtn) speakBtn.classList.remove('speaking'); };
+            utterance.onerror = () => { if (speakBtn) speakBtn.classList.remove('speaking'); };
+            speechSynth.speak(utterance);
+        }
+
+        if (speechSynth.onvoiceschanged !== undefined) {
+            speechSynth.onvoiceschanged = () => speechSynth.getVoices();
+        }
+
+        // ==================== 认证功能 ====================
+        let authMode = 'login';
+
+        function switchAuthTab(mode) {
+            authMode = mode;
+            document.getElementById('tab-login').classList.toggle('active', mode === 'login');
+            document.getElementById('tab-signup').classList.toggle('active', mode === 'signup');
+            document.getElementById('auth-submit-btn').textContent = mode === 'login' ? '登录' : '注册';
+            document.getElementById('auth-error').textContent = '';
+            document.getElementById('auth-msg').textContent = '';
+        }
+
+        async function handleAuth() {
+            const email = document.getElementById('auth-email').value.trim();
+            const password = document.getElementById('auth-password').value.trim();
+            const errorEl = document.getElementById('auth-error');
+            const msgEl = document.getElementById('auth-msg');
+            errorEl.textContent = '';
+            msgEl.textContent = '';
+
+            if (!email || !password) { errorEl.textContent = '请填写邮箱和密码'; return; }
+            if (password.length < 6) { errorEl.textContent = '密码至少需要6位'; return; }
+
+            const btn = document.getElementById('auth-submit-btn');
+            btn.disabled = true;
+            btn.textContent = authMode === 'login' ? '登录中...' : '注册中...';
+
+            try {
+                if (authMode === 'login') {
+                    const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+                    if (error) throw error;
+                    currentUser = data.user;
+                    showApp();
+                } else {
+                    const { data, error } = await supabaseClient.auth.signUp({ email, password });
+                    if (error) throw error;
+                    if (data.user && data.session) {
+                        currentUser = data.user;
+                        showApp();
+                    } else {
+                        msgEl.textContent = '注册成功！请查看邮箱确认后再登录。';
+                        btn.disabled = false;
+                        btn.textContent = '注册';
+                    }
+                }
+            } catch (err) {
+                errorEl.textContent = translateError(err.message);
+                btn.disabled = false;
+                btn.textContent = authMode === 'login' ? '登录' : '注册';
+            }
+        }
+
+        function translateError(msg) {
+            const map = {
+                'Invalid login credentials': '邮箱或密码错误',
+                'Email not confirmed': '邮箱未确认，请查看邮箱确认后再登录',
+                'User already registered': '该邮箱已注册，请直接登录',
+                'Password should be at least 6 characters': '密码至少需要6位',
+                'Unable to validate email address': '邮箱格式不正确',
+            };
+            return map[msg] || msg;
+        }
+
+        async function signOut() {
+            await supabaseClient.auth.signOut();
+            currentUser = null;
+            words = [];
+            document.getElementById('main-app').style.display = 'none';
+            document.getElementById('auth-screen').style.display = 'flex';
+        }
+
+        async function initAuth() {
+            const { data: { session } } = await supabaseClient.auth.getSession();
+            if (session) {
+                currentUser = session.user;
+                showApp();
+            }
+
+            supabaseClient.auth.onAuthStateChange((event, session) => {
+                if (event === 'SIGNED_OUT') {
+                    currentUser = null;
+                    document.getElementById('main-app').style.display = 'none';
+                    document.getElementById('auth-screen').style.display = 'flex';
+                }
+            });
+        }
+
+        // ==================== 显示应用 ====================
+        async function showApp() {
+            document.getElementById('auth-screen').style.display = 'none';
+            document.getElementById('main-app').style.display = 'block';
+            document.getElementById('user-email').textContent = currentUser.email;
+
+            setToday();
+            showLoading(true);
+            await loadWords();
+            showLoading(false);
+
+            renderWordList();
+            updateReviewStats();
+            updateStats();
+
+            // 迁移本地数据
+            await migrateLocalData();
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading').classList.toggle('show', show);
+        }
+
+        // ==================== 数据操作（Supabase） ====================
+        async function loadWords() {
+            const { data, error } = await supabaseClient
+                .from('words')
+                .select('*')
+                .order('date', { ascending: false });
+            if (error) {
+                showToast('加载数据失败: ' + error.message);
+                return;
+            }
+            words = data || [];
+        }
+
+        async function addWordToDB(wordData) {
+            const { data, error } = await supabaseClient
+                .from('words')
+                .insert([{
+                    user_id: currentUser.id,
+                    word: wordData.word,
+                    meaning: wordData.meaning,
+                    synonyms: wordData.synonyms || [],
+                    distinguish: wordData.distinguish || [],
+                    root_words: wordData.rootWords || [],
+                    date: wordData.date,
+                    last_review: null,
+                    review_count: 0,
+                    next_review: wordData.date
+                }])
+                .select();
+            if (error) throw error;
+            return data[0];
+        }
+
+        async function updateWordInDB(id, updates) {
+            const dbUpdates = {};
+            if (updates.lastReview !== undefined) dbUpdates.last_review = updates.lastReview;
+            if (updates.reviewCount !== undefined) dbUpdates.review_count = updates.reviewCount;
+            if (updates.nextReview !== undefined) dbUpdates.next_review = updates.nextReview;
+            if (updates.word !== undefined) dbUpdates.word = updates.word;
+            if (updates.meaning !== undefined) dbUpdates.meaning = updates.meaning;
+            if (updates.synonyms !== undefined) dbUpdates.synonyms = updates.synonyms;
+            if (updates.distinguish !== undefined) dbUpdates.distinguish = updates.distinguish;
+            if (updates.rootWords !== undefined) dbUpdates.root_words = updates.rootWords;
+
+            const { error } = await supabaseClient
+                .from('words')
+                .update(dbUpdates)
+                .eq('id', id);
+            if (error) throw error;
+        }
+
+        async function deleteWordFromDB(id) {
+            const { error } = await supabaseClient
+                .from('words')
+                .delete()
+                .eq('id', id);
+            if (error) throw error;
+        }
+
+        // 迁移本地数据
+        async function migrateLocalData() {
+            const localData = localStorage.getItem('vocab_review_data');
+            if (!localData) return;
+
+            try {
+                const localWords = JSON.parse(localData);
+                if (!localWords || localWords.length === 0) {
+                    localStorage.removeItem('vocab_review_data');
+                    return;
+                }
+
+                if (confirm(`发现 ${localWords.length} 个本地保存的单词，是否导入到云端？`)) {
+                    showLoading(true);
+                    let count = 0;
+                    for (const w of localWords) {
+                        try {
+                            await addWordToDB({
+                                word: w.word,
+                                meaning: w.meaning,
+                                synonyms: w.synonyms || [],
+                                distinguish: w.distinguish || [],
+                                rootWords: w.rootWords || w.root_words || [],
+                                date: w.date
+                            });
+                            count++;
+                        } catch (e) { /* skip duplicates */ }
+                    }
+                    await loadWords();
+                    renderWordList();
+                    updateReviewStats();
+                    updateStats();
+                    showLoading(false);
+                    showToast(`成功导入 ${count} 个单词到云端！`);
+                    localStorage.removeItem('vocab_review_data');
+                } else {
+                    localStorage.removeItem('vocab_review_data');
+                }
+            } catch (e) {
+                // ignore
+            }
+        }
+
+        // ==================== 页面导航 ====================
+        function showPage(pageName, btn) {
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById('page-' + pageName).classList.add('active');
+            if (btn) btn.classList.add('active');
+
+            if (pageName === 'import') renderWordList();
+            if (pageName === 'review') updateReviewStats();
+            if (pageName === 'stats') updateStats();
+        }
+
+        // ==================== 导入功能 ====================
+        function setToday() {
+            document.getElementById('import-date').value = new Date().toISOString().split('T')[0];
+        }
+
+        // 同义词标签输入
+        const synonymInput = document.getElementById('synonym-input');
+        const synonymsContainer = document.getElementById('synonyms-container');
+        let synonyms = [];
+
+        synonymInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const value = this.value.trim();
+                if (value && !synonyms.includes(value)) {
+                    synonyms.push(value);
+                    renderSynonymTags();
+                }
+                this.value = '';
+            }
+        });
+
+        function renderSynonymTags() {
+            synonymsContainer.querySelectorAll('.tag').forEach(t => t.remove());
+            synonyms.forEach((s, i) => {
+                const tag = document.createElement('span');
+                tag.className = 'tag';
+                tag.innerHTML = `${s} <span class="tag-remove" onclick="removeSynonym(${i})">×</span>`;
+                synonymsContainer.insertBefore(tag, synonymInput);
+            });
+        }
+
+        function removeSynonym(index) {
+            synonyms.splice(index, 1);
+            renderSynonymTags();
+        }
+
+        function addDistinguishField() {
+            const list = document.getElementById('distinguish-list');
+            const item = document.createElement('div');
+            item.className = 'distinguish-item';
+            item.innerHTML = `<input type="text" class="form-input" placeholder="单词"><input type="text" class="form-input" placeholder="释义"><button class="remove-dist" onclick="this.parentElement.remove()">×</button>`;
+            list.appendChild(item);
+        }
+
+        function addRootWordField() {
+            const list = document.getElementById('root-words-list');
+            const item = document.createElement('div');
+            item.className = 'root-word-item';
+            item.innerHTML = `<input type="text" class="form-input" placeholder="单词"><input type="text" class="form-input" placeholder="释义"><button class="remove-root" onclick="this.parentElement.remove()">×</button>`;
+            list.appendChild(item);
+        }
+
+        async function saveWord() {
+            const date = document.getElementById('import-date').value;
+            const word = document.getElementById('word-input').value.trim();
+            const meaning = document.getElementById('meaning-input').value.trim();
+
+            if (!date) { showToast('请选择日期'); return; }
+            if (!word) { showToast('请输入单词'); return; }
+            if (!meaning) { showToast('请输入释义'); return; }
+
+            const distItems = document.querySelectorAll('#distinguish-list .distinguish-item');
+            const distinguish = [];
+            distItems.forEach(item => {
+                const inputs = item.querySelectorAll('input');
+                const dw = inputs[0].value.trim();
+                const dm = inputs[1].value.trim();
+                if (dw && dm) distinguish.push({ word: dw, meaning: dm });
+            });
+
+            const rootItems = document.querySelectorAll('#root-words-list .root-word-item');
+            const rootWords = [];
+            rootItems.forEach(item => {
+                const inputs = item.querySelectorAll('input');
+                const rw = inputs[0].value.trim();
+                const rm = inputs[1].value.trim();
+                if (rw && rm) rootWords.push({ word: rw, meaning: rm });
+            });
+
+            const btn = document.getElementById('save-word-btn');
+            btn.disabled = true;
+            btn.textContent = '保存中...';
+
+            try {
+                const newWord = await addWordToDB({
+                    word, meaning,
+                    synonyms: [...synonyms],
+                    distinguish,
+                    rootWords,
+                    date
+                });
+                words.unshift(newWord);
+                clearForm();
+                renderWordList();
+                updateReviewStats();
+                showToast('单词保存成功！');
+            } catch (err) {
+                showToast('保存失败: ' + err.message);
+            }
+
+            btn.disabled = false;
+            btn.textContent = '💾 保存单词';
+        }
+
+        function clearForm() {
+            document.getElementById('word-input').value = '';
+            document.getElementById('meaning-input').value = '';
+            document.getElementById('synonym-input').value = '';
+            synonyms = [];
+            renderSynonymTags();
+            document.getElementById('distinguish-list').innerHTML = '';
+            document.getElementById('root-words-list').innerHTML = '';
+        }
+
+        // ==================== 单词列表 ====================
+        function renderWordList() {
+            const list = document.getElementById('word-list');
+            const date = document.getElementById('import-date').value;
+            const filtered = date ? words.filter(w => w.date === date) : words;
+
+            document.getElementById('word-list-count').textContent = `（${filtered.length} 个）`;
+
+            if (filtered.length === 0) {
+                list.innerHTML = `<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-text">${date ? '该日期暂无单词' : '暂无单词'}</div></div>`;
+                return;
+            }
+
+            list.innerHTML = filtered.map(w => {
+                const rw = w.root_words || [];
+                return `
+                <div class="word-item">
+                    <div class="word-info">
+                        <div class="word-text">${w.word}</div>
+                        <div class="word-meaning">${w.meaning}</div>
+                        <div class="word-meta">
+                            📅 ${w.date}
+                            ${w.synonyms && w.synonyms.length ? ' · 📝 同义词 ' + w.synonyms.length + '个' : ''}
+                            ${w.distinguish && w.distinguish.length ? ' · ⚠️ 易混词 ' + w.distinguish.length + '个' : ''}
+                            ${rw.length ? ' · 🌱 同词根 ' + rw.length + '个' : ''}
+                            · 已复习 ${w.review_count || 0} 次
+                        </div>
+                    </div>
+                    <div class="word-actions">
+                        <button class="btn btn-outline btn-sm" onclick="editWord('${w.id}')">✏️</button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteWord('${w.id}')">🗑️</button>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        // ==================== 编辑功能 ====================
+        let editSynonyms = [];
+        const editSynonymInput = document.getElementById('edit-synonym-input');
+        const editSynonymsContainer = document.getElementById('edit-synonyms-container');
+
+        editSynonymInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const value = this.value.trim();
+                if (value && !editSynonyms.includes(value)) {
+                    editSynonyms.push(value);
+                    renderEditSynonymTags();
+                }
+                this.value = '';
+            }
+        });
+
+        function renderEditSynonymTags() {
+            editSynonymsContainer.querySelectorAll('.tag').forEach(t => t.remove());
+            editSynonyms.forEach((s, i) => {
+                const tag = document.createElement('span');
+                tag.className = 'tag';
+                tag.innerHTML = `${s} <span class="tag-remove" onclick="removeEditSynonym(${i})">×</span>`;
+                editSynonymsContainer.insertBefore(tag, editSynonymInput);
+            });
+        }
+
+        function removeEditSynonym(index) {
+            editSynonyms.splice(index, 1);
+            renderEditSynonymTags();
+        }
+
+        function addEditDistinguishField() {
+            const list = document.getElementById('edit-distinguish-list');
+            const item = document.createElement('div');
+            item.className = 'distinguish-item';
+            item.innerHTML = `<input type="text" class="form-input" placeholder="单词"><input type="text" class="form-input" placeholder="释义"><button class="remove-dist" onclick="this.parentElement.remove()">×</button>`;
+            list.appendChild(item);
+        }
+
+        function addEditRootWordField() {
+            const list = document.getElementById('edit-root-words-list');
+            const item = document.createElement('div');
+            item.className = 'root-word-item';
+            item.innerHTML = `<input type="text" class="form-input" placeholder="单词"><input type="text" class="form-input" placeholder="释义"><button class="remove-root" onclick="this.parentElement.remove()">×</button>`;
+            list.appendChild(item);
+        }
+
+        function editWord(id) {
+            const w = words.find(w => w.id === id);
+            if (!w) return;
+            currentEditId = id;
+
+            document.getElementById('edit-word').value = w.word;
+            document.getElementById('edit-meaning').value = w.meaning;
+
+            editSynonyms = [...(w.synonyms || [])];
+            renderEditSynonymTags();
+
+            const distList = document.getElementById('edit-distinguish-list');
+            distList.innerHTML = '';
+            (w.distinguish || []).forEach(d => {
+                const item = document.createElement('div');
+                item.className = 'distinguish-item';
+                item.innerHTML = `<input type="text" class="form-input" placeholder="单词" value="${d.word}"><input type="text" class="form-input" placeholder="释义" value="${d.meaning}"><button class="remove-dist" onclick="this.parentElement.remove()">×</button>`;
+                distList.appendChild(item);
+            });
+
+            const rootList = document.getElementById('edit-root-words-list');
+            rootList.innerHTML = '';
+            (w.root_words || []).forEach(r => {
+                const item = document.createElement('div');
+                item.className = 'root-word-item';
+                item.innerHTML = `<input type="text" class="form-input" placeholder="单词" value="${r.word}"><input type="text" class="form-input" placeholder="释义" value="${r.meaning}"><button class="remove-root" onclick="this.parentElement.remove()">×</button>`;
+                rootList.appendChild(item);
+            });
+
+            document.getElementById('edit-modal').classList.add('show');
+        }
+
+        function closeEditModal() {
+            document.getElementById('edit-modal').classList.remove('show');
+            currentEditId = null;
+            editSynonyms = [];
+        }
+
+        async function saveEdit() {
+            if (!currentEditId) return;
+            const w = words.find(w => w.id === currentEditId);
+            if (!w) return;
+
+            const newWord = document.getElementById('edit-word').value.trim();
+            const newMeaning = document.getElementById('edit-meaning').value.trim();
+            if (!newWord || !newMeaning) { showToast('单词和释义不能为空'); return; }
+
+            const distItems = document.querySelectorAll('#edit-distinguish-list .distinguish-item');
+            const distinguish = [];
+            distItems.forEach(item => {
+                const inputs = item.querySelectorAll('input');
+                const dw = inputs[0].value.trim();
+                const dm = inputs[1].value.trim();
+                if (dw && dm) distinguish.push({ word: dw, meaning: dm });
+            });
+
+            const rootItems = document.querySelectorAll('#edit-root-words-list .root-word-item');
+            const rootWords = [];
+            rootItems.forEach(item => {
+                const inputs = item.querySelectorAll('input');
+                const rw = inputs[0].value.trim();
+                const rm = inputs[1].value.trim();
+                if (rw && rm) rootWords.push({ word: rw, meaning: rm });
+            });
+
+            const btn = document.getElementById('save-edit-btn');
+            btn.disabled = true;
+            btn.textContent = '保存中...';
+
+            try {
+                await updateWordInDB(currentEditId, {
+                    word: newWord,
+                    meaning: newMeaning,
+                    synonyms: [...editSynonyms],
+                    distinguish,
+                    rootWords
+                });
+                // 更新本地缓存
+                w.word = newWord;
+                w.meaning = newMeaning;
+                w.synonyms = [...editSynonyms];
+                w.distinguish = distinguish;
+                w.root_words = rootWords;
+
+                closeEditModal();
+                renderWordList();
+                showToast('修改成功');
+            } catch (err) {
+                showToast('修改失败: ' + err.message);
+            }
+
+            btn.disabled = false;
+            btn.textContent = '保存';
+        }
+
+        async function deleteWord(id) {
+            if (!confirm('确定要删除这个单词吗？')) return;
+            try {
+                await deleteWordFromDB(id);
+                words = words.filter(w => w.id !== id);
+                renderWordList();
+                updateReviewStats();
+                updateStats();
+                showToast('已删除');
+            } catch (err) {
+                showToast('删除失败: ' + err.message);
+            }
+        }
+
+        // ==================== 复习功能 ====================
+        function updateReviewStats() {
+            const smartWords = getSmartReviewWords();
+            document.getElementById('smart-count').textContent = smartWords.length + ' 个';
+            document.getElementById('total-count').textContent = words.length + ' 个';
+        }
+
+        function getSmartReviewWords() {
+            const today = new Date().toISOString().split('T')[0];
+            return words.filter(w => {
+                if (!w.next_review) return true;
+                return w.next_review <= today;
+            });
+        }
+
+        function startSmartReview() {
+            const smartWords = getSmartReviewWords();
+            if (smartWords.length === 0) {
+                showToast('今天没有需要复习的单词，太棒了！');
+                return;
+            }
+            startStudy(smartWords);
+        }
+
+        function showDateReview() {
+            const section = document.getElementById('date-review-section');
+            section.style.display = section.style.display === 'none' ? 'block' : 'none';
+            if (section.style.display === 'block') renderCalendar();
+        }
+
+        function renderCalendar() {
+            const calendar = document.getElementById('calendar');
+            const today = new Date();
+            const year = today.getFullYear();
+            const month = today.getMonth();
+
+            const wordCountByDate = {};
+            words.forEach(w => { wordCountByDate[w.date] = (wordCountByDate[w.date] || 0) + 1; });
+
+            const firstDay = new Date(year, month, 1).getDay();
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+            const todayStr = today.toISOString().split('T')[0];
+
+            let html = ['日','一','二','三','四','五','六'].map(d => `<div class="calendar-header">${d}</div>`).join('');
+
+            for (let i = 0; i < firstDay; i++) html += '<div class="calendar-day"></div>';
+
+            for (let day = 1; day <= daysInMonth; day++) {
+                const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+                const count = wordCountByDate[dateStr] || 0;
+                const isToday = dateStr === todayStr;
+                const classes = ['calendar-day'];
+                if (count > 0) classes.push('has-words');
+                if (isToday) classes.push('today');
+                html += `<div class="${classes.join(' ')}" data-count="${count ? count+'词' : ''}" onclick="selectDate('${dateStr}')" style="${count ? 'cursor:pointer' : ''}">${day}</div>`;
+            }
+            calendar.innerHTML = html;
+        }
+
+        function selectDate(dateStr) {
+            const dateWords = words.filter(w => w.date === dateStr);
+            if (dateWords.length === 0) { showToast('该日期没有单词'); return; }
+            startStudy(dateWords);
+        }
+
+        // ==================== 学习功能 ====================
+        async function startStudy(wordList) {
+            studyWords = [...wordList];
+            studyIndex = 0;
+            meaningVisible = false;
+
+            // 更新复习数据
+            const today = new Date().toISOString().split('T')[0];
+            for (const w of studyWords) {
+                const newCount = (w.review_count || 0) + 1;
+                const intervalIndex = Math.min(newCount, REVIEW_INTERVALS.length - 1);
+                const nextDate = new Date();
+                nextDate.setDate(nextDate.getDate() + REVIEW_INTERVALS[intervalIndex]);
+                const nextReview = nextDate.toISOString().split('T')[0];
+
+                w.last_review = today;
+                w.review_count = newCount;
+                w.next_review = nextReview;
+
+                updateWordInDB(w.id, {
+                    lastReview: today,
+                    reviewCount: newCount,
+                    nextReview
+                }).catch(() => {});
+            }
+
+            // 同步本地缓存
+            words = words.map(w => {
+                const updated = studyWords.find(sw => sw.id === w.id);
+                return updated || w;
+            });
+
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.getElementById('page-study').classList.add('active');
+
+            renderStudyWord();
+        }
+
+        function renderStudyWord() {
+            if (studyWords.length === 0) return;
+            const word = studyWords[studyIndex];
+
+            // 隐藏意思
+            const meaningDisplay = document.getElementById('meaning-display');
+            meaningDisplay.classList.remove('show');
+            meaningDisplay.style.visibility = 'hidden';
+            meaningDisplay.style.height = '0';
+
+            document.getElementById('main-word').textContent = word.word;
+            meaningDisplay.textContent = word.meaning;
+            document.getElementById('hint-text').textContent = '点击屏幕或按空格键显示释义';
+            meaningVisible = false;
+
+            document.getElementById('current-index').textContent = studyIndex + 1;
+            document.getElementById('total-words').textContent = studyWords.length;
+
+            // 同义词
+            const synonymBox = document.getElementById('synonym-box');
+            const synonymContent = document.getElementById('synonym-content');
+            if (word.synonyms && word.synonyms.length > 0) {
+                synonymBox.style.display = 'block';
+                document.getElementById('synonym-count').textContent = word.synonyms.length;
+                synonymContent.innerHTML = word.synonyms.map(s => `<div class="synonym-item">${s}</div>`).join('');
+                synonymContent.classList.remove('show');
+            } else {
+                synonymBox.style.display = 'none';
+            }
+
+            // 易混词
+            const distBox = document.getElementById('dist-box');
+            const distContent = document.getElementById('dist-content');
+            if (word.distinguish && word.distinguish.length > 0) {
+                distBox.style.display = 'block';
+                document.getElementById('dist-count').textContent = word.distinguish.length;
+                distContent.innerHTML = word.distinguish.map((d, i) => `
+                    <div class="dist-item" onclick="toggleDistMeaning(${i})" data-index="${i}">
+                        <div class="dist-word">${d.word}</div>
+                        <div class="dist-meaning" id="dist-meaning-${i}">${d.meaning}</div>
+                    </div>
+                `).join('');
+            } else {
+                distBox.style.display = 'none';
+            }
+
+            // 同词根词
+            const rootBox = document.getElementById('root-box');
+            const rootContent = document.getElementById('root-content');
+            const rootWords = word.root_words || [];
+            if (rootWords.length > 0) {
+                rootBox.style.display = 'block';
+                document.getElementById('root-count').textContent = rootWords.length;
+                rootContent.innerHTML = rootWords.map((r, i) => `
+                    <div class="dist-item" onclick="toggleRootMeaning(${i})" data-index="${i}">
+                        <div class="dist-word">${r.word}</div>
+                        <div class="dist-meaning" id="root-meaning-${i}">${r.meaning}</div>
+                    </div>
+                `).join('');
+            } else {
+                rootBox.style.display = 'none';
+            }
+
+            // 自动发音
+            setTimeout(() => speakWord(word.word), 100);
+        }
+
+        function toggleMeaning() {
+            meaningVisible = !meaningVisible;
+            const display = document.getElementById('meaning-display');
+            const hint = document.getElementById('hint-text');
+            if (meaningVisible) {
+                display.style.visibility = 'visible';
+                display.style.height = 'auto';
+                display.classList.add('show');
+                hint.textContent = '点击屏幕或按空格键隐藏释义';
+            } else {
+                display.classList.remove('show');
+                display.style.visibility = 'hidden';
+                display.style.height = '0';
+                hint.textContent = '点击屏幕或按空格键显示释义';
+            }
+        }
+
+        function toggleSynonyms() {
+            document.getElementById('synonym-content').classList.toggle('show');
+        }
+
+        function toggleDistMeaning(index) {
+            const el = document.getElementById('dist-meaning-' + index);
+            if (el) el.classList.toggle('show');
+        }
+
+        function toggleRootMeaning(index) {
+            const el = document.getElementById('root-meaning-' + index);
+            if (el) el.classList.toggle('show');
+        }
+
+        function showAllDistMeanings() {
+            const word = studyWords[studyIndex];
+            if (!word || !word.distinguish || word.distinguish.length === 0) return;
+            word.distinguish.forEach((d, i) => {
+                const el = document.getElementById('dist-meaning-' + i);
+                if (el) el.classList.add('show');
+            });
+            showToast('已显示所有易混词意思');
+        }
+
+        function showAllRootMeanings() {
+            const word = studyWords[studyIndex];
+            const rw = (word && word.root_words) || [];
+            if (rw.length === 0) return;
+            rw.forEach((r, i) => {
+                const el = document.getElementById('root-meaning-' + i);
+                if (el) el.classList.add('show');
+            });
+            showToast('已显示所有同词根词意思');
+        }
+
+        function prevWord() {
+            if (studyIndex > 0) {
+                studyIndex--;
+                renderStudyWord();
+            }
+        }
+
+        function nextWord() {
+            if (studyIndex < studyWords.length - 1) {
+                studyIndex++;
+                renderStudyWord();
+            } else {
+                showToast('已经是最后一个单词了！');
+            }
+        }
+
+        function exitReview() {
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.getElementById('page-review').classList.add('active');
+            updateReviewStats();
+        }
+
+        // ==================== 键盘事件 ====================
+        document.addEventListener('keydown', function(e) {
+            if (!document.getElementById('page-study').classList.contains('active')) return;
+            const tag = document.activeElement.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+            switch(e.key) {
+                case ' ': e.preventDefault(); toggleMeaning(); break;
+                case 'ArrowLeft': e.preventDefault(); prevWord(); break;
+                case 'ArrowRight': e.preventDefault(); nextWord(); break;
+                case 'p': case 'P': speakWord(); break;
+                case 's': case 'S': toggleSynonyms(); break;
+                case 'd': case 'D': showAllDistMeanings(); break;
+                case 'f': case 'F': showAllRootMeanings(); break;
+            }
+        });
+
+        // ==================== 触摸手势 ====================
+        let touchStartX = 0;
+        let touchStartY = 0;
+        let touchStartTime = 0;
+
+        document.addEventListener('touchstart', function(e) {
+            if (!document.getElementById('page-study').classList.contains('active')) return;
+            touchStartX = e.changedTouches[0].screenX;
+            touchStartY = e.changedTouches[0].screenY;
+            touchStartTime = Date.now();
+        }, { passive: true });
+
+        document.addEventListener('touchend', function(e) {
+            if (!document.getElementById('page-study').classList.contains('active')) return;
+            const touchEndX = e.changedTouches[0].screenX;
+            const touchEndY = e.changedTouches[0].screenY;
+            const diffX = touchStartX - touchEndX;
+            const diffY = touchStartY - touchEndY;
+            const duration = Date.now() - touchStartTime;
+
+            // 水平滑动检测（排除在按钮上点击的情况）
+            if (Math.abs(diffX) > 50 && Math.abs(diffX) > Math.abs(diffY) * 2 && duration < 500) {
+                // 检查是否点在底部操作栏上
+                const target = e.target;
+                if (target.closest('.mobile-controls')) return;
+
+                if (diffX > 0) {
+                    nextWord();
+                } else {
+                    prevWord();
+                }
+            }
+        }, { passive: true });
+
+        // ==================== 统计功能 ====================
+        function updateStats() {
+            const today = new Date().toISOString().split('T')[0];
+            const todayWords = words.filter(w => w.date === today);
+            const reviewedWords = words.filter(w => (w.review_count || 0) > 0);
+            const smartWords = getSmartReviewWords();
+
+            document.getElementById('stat-total').textContent = words.length;
+            document.getElementById('stat-today').textContent = todayWords.length;
+            document.getElementById('stat-reviewed').textContent = reviewedWords.length;
+            document.getElementById('stat-today-review').textContent = smartWords.length;
+
+            const dateStats = {};
+            words.forEach(w => { dateStats[w.date] = (dateStats[w.date] || 0) + 1; });
+
+            const sortedDates = Object.keys(dateStats).sort().reverse();
+            const statsHtml = sortedDates.map(date => `
+                <div class="word-item" style="cursor:pointer" onclick="selectDate('${date}')">
+                    <div class="word-info">
+                        <div class="word-text">${date}</div>
+                        <div class="word-meta">${dateStats[date]} 个单词</div>
+                    </div>
+                    <button class="btn btn-outline btn-sm">复习</button>
+                </div>
+            `).join('');
+
+            document.getElementById('date-stats').innerHTML = statsHtml || '<div class="empty-state"><div class="empty-text">暂无数据</div></div>';
+        }
+
+        // ==================== 工具函数 ====================
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 2500);
+        }
+
+        // ==================== 回车提交登录 ====================
+        document.getElementById('auth-password').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') handleAuth();
+        });
+
+        // ==================== 初始化 ====================
+        initAuth();
+    </script>
+</body>
+</html>
