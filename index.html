@@ -5,17 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>单词复习助手</title>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script>
-        // CDN 备用加载：如果 jsdelivr 加载失败，自动切换到其他 CDN
-        if (typeof supabase === 'undefined') {
-            document.write('<script src="https://unpkg.com/@supabase/supabase-js@2"><\/script>');
-        }
-    </script>
-    <script>
-        if (typeof supabase === 'undefined') {
-            document.write('<script src="https://cdn.staticfile.org/supabase-js/2.45.0/umd/supabase.min.js"><\/script>');
-        }
-    </script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         :root {
@@ -716,22 +705,30 @@
         const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlxdGt4cHd0ZmZpYWZldm5raGxwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAzMzE0NDgsImV4cCI6MjEwNTkwNzQ0OH0.DT_VlmRIVcTlCoeAFAjke1tmoIdNYYchawrC5YtWi0Q';
         // =================================================
 
-        // 检查 Supabase 脚本是否加载成功（不用 throw，避免中断后续代码）
-        const supabaseLoaded = typeof supabase !== 'undefined';
-        if (!supabaseLoaded) {
-            console.error('Supabase 脚本加载失败');
-        }
-
-        const supabaseClient = supabaseLoaded ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
-
         // ==================== 全局状态 ====================
-        let words = [];
-        let currentUser = null;
-        let currentEditId = null;
-        let studyWords = [];
-        let studyIndex = 0;
-        let meaningVisible = false;
+        var words = [];
+        var currentUser = null;
+        var currentEditId = null;
+        var studyWords = [];
+        var studyIndex = 0;
+        var meaningVisible = false;
+        var authMode = 'login';
+        var supabaseLoaded = false;
+        var supabaseClient = null;
         const REVIEW_INTERVALS = [0, 1, 2, 4, 7, 15, 30, 60];
+
+        // 初始化 Supabase（安全包裹，出错不中断脚本）
+        try {
+            supabaseLoaded = typeof supabase !== 'undefined';
+            if (supabaseLoaded) {
+                supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+            } else {
+                console.error('Supabase 脚本加载失败');
+            }
+        } catch (e) {
+            console.error('Supabase 初始化失败:', e);
+            supabaseLoaded = false;
+        }
 
         // ==================== 发音功能 ====================
         const speechSynth = window.speechSynthesis;
@@ -762,7 +759,6 @@
         }
 
         // ==================== 认证功能 ====================
-        let authMode = 'login';
 
         function switchAuthTab(mode) {
             authMode = mode;
@@ -1129,7 +1125,7 @@
         // 同义词标签输入
         const synonymInput = document.getElementById('synonym-input');
         const synonymsContainer = document.getElementById('synonyms-container');
-        let synonyms = [];
+        var synonyms = [];
 
         synonymInput.addEventListener('keydown', function(e) {
             if (e.key === 'Enter') {
@@ -1273,7 +1269,7 @@
         }
 
         // ==================== 编辑功能 ====================
-        let editSynonyms = [];
+        var editSynonyms = [];
         const editSynonymInput = document.getElementById('edit-synonym-input');
         const editSynonymsContainer = document.getElementById('edit-synonyms-container');
 
@@ -1691,9 +1687,9 @@
         });
 
         // ==================== 触摸手势 ====================
-        let touchStartX = 0;
-        let touchStartY = 0;
-        let touchStartTime = 0;
+        var touchStartX = 0;
+        var touchStartY = 0;
+        var touchStartTime = 0;
 
         document.addEventListener('touchstart', function(e) {
             if (!document.getElementById('page-study').classList.contains('active')) return;
