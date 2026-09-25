@@ -5,6 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>单词复习助手</title>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script>
+        // CDN 备用加载：如果 jsdelivr 加载失败，自动切换到其他 CDN
+        if (typeof supabase === 'undefined') {
+            document.write('<script src="https://unpkg.com/@supabase/supabase-js@2"><\/script>');
+        }
+    </script>
+    <script>
+        if (typeof supabase === 'undefined') {
+            document.write('<script src="https://cdn.staticfile.org/supabase-js/2.45.0/umd/supabase.min.js"><\/script>');
+        }
+    </script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         :root {
@@ -771,6 +782,16 @@
             return (email || '').split('@')[0];
         }
 
+        // 带超时的请求包装
+        function withTimeout(promise, ms, message) {
+            return Promise.race([
+                promise,
+                new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error(message || '请求超时，请检查网络')), ms)
+                )
+            ]);
+        }
+
         async function handleAuth() {
             const username = document.getElementById('auth-username').value.trim();
             const password = document.getElementById('auth-password').value.trim();
@@ -787,17 +808,49 @@
             const email = usernameToEmail(username);
             const btn = document.getElementById('auth-submit-btn');
             btn.disabled = true;
-            btn.textContent = authMode === 'login' ? '登录中...' : '注册中...';
+
+            // 分步诊断
+            msgEl.style.color = '#4A90E2';
+            msgEl.textContent = '① 检查 Supabase 脚本...';
+            btn.textContent = '连接中...';
+
+            // 检查 supabase 库是否加载
+            if (typeof supabase === 'undefined') {
+                errorEl.textContent = '❌ Supabase 脚本加载失败！请检查网络，或尝试刷新页面';
+                btn.disabled = false;
+                btn.textContent = authMode === 'login' ? '登录' : '注册';
+                msgEl.textContent = '';
+                return;
+            }
+
+            msgEl.textContent = '② 正在连接服务器...';
+            btn.textContent = '登录中...';
 
             try {
+                let result;
                 if (authMode === 'login') {
-                    const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
-                    if (error) throw error;
+                    result = await withTimeout(
+                        supabaseClient.auth.signInWithPassword({ email, password }),
+                        15000,
+                        '连接超时！Supabase 服务器没有回应，请检查网络'
+                    );
+                } else {
+                    result = await withTimeout(
+                        supabaseClient.auth.signUp({ email, password }),
+                        15000,
+                        '连接超时！Supabase 服务器没有回应，请检查网络'
+                    );
+                }
+
+                const { data, error } = result;
+                if (error) throw error;
+
+                msgEl.textContent = '③ 登录成功，正在加载数据...';
+
+                if (authMode === 'login') {
                     currentUser = data.user;
                     await showApp();
                 } else {
-                    const { data, error } = await supabaseClient.auth.signUp({ email, password });
-                    if (error) throw error;
                     if (data.user && data.session) {
                         currentUser = data.user;
                         await showApp();
@@ -808,9 +861,11 @@
                     }
                 }
             } catch (err) {
-                errorEl.textContent = translateError(err.message) || '登录失败，请检查网络后重试';
+                const msg = translateError(err.message) || err.message || '登录失败';
+                errorEl.textContent = '❌ ' + msg;
                 btn.disabled = false;
                 btn.textContent = authMode === 'login' ? '登录' : '注册';
+                msgEl.textContent = '';
             }
         }
 
