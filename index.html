@@ -448,8 +448,8 @@
             </div>
             <div class="auth-form">
                 <div class="form-group">
-                    <label class="form-label">邮箱</label>
-                    <input type="email" id="auth-email" class="form-input" placeholder="请输入邮箱">
+                    <label class="form-label">用户名</label>
+                    <input type="text" id="auth-username" class="form-input" placeholder="请输入用户名（字母或数字）" autocomplete="username">
                 </div>
                 <div class="form-group">
                     <label class="form-label">密码</label>
@@ -482,6 +482,23 @@
         <div class="container">
             <!-- 导入页面 -->
             <div id="page-import" class="page active">
+                <div class="card" id="import-data-card">
+                    <div class="card-title">📦 导入旧数据</div>
+                    <p style="font-size:13px;color:#666;margin-bottom:12px">
+                        如果之前在本地版本导出过数据文件（.json），在这里导入到云端。<br>
+                        <b>导入方法：</b>打开旧版网页 → 点击"导出数据"按钮 → 在这里上传 JSON 文件。
+                    </p>
+                    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+                        <input type="file" id="import-file-input" accept=".json" style="display:none" onchange="handleImportFile(event)">
+                        <button class="btn btn-outline" onclick="document.getElementById('import-file-input').click()">📂 选择 JSON 文件</button>
+                        <button class="btn btn-outline" onclick="togglePasteImport()">📋 粘贴数据</button>
+                        <button class="btn btn-outline" onclick="hideImportCard()">关闭</button>
+                    </div>
+                    <div id="paste-import-area" style="display:none;margin-top:12px">
+                        <textarea id="paste-import-text" class="form-textarea" placeholder='粘贴 JSON 数据，例如 [{"word":"apple","meaning":"苹果",...}]' style="min-height:100px"></textarea>
+                        <button class="btn btn-primary" onclick="importPastedData()" style="margin-top:8px">📥 导入粘贴的数据</button>
+                    </div>
+                </div>
                 <div class="card">
                     <div class="card-title">📅 选择日期</div>
                     <div class="date-selector">
@@ -739,17 +756,29 @@
             document.getElementById('auth-msg').textContent = '';
         }
 
+        // 用户名转为内部邮箱格式（Supabase 需要邮箱格式）
+        function usernameToEmail(username) {
+            return username.trim().toLowerCase() + '@vocab.app';
+        }
+
+        function emailToUsername(email) {
+            return (email || '').split('@')[0];
+        }
+
         async function handleAuth() {
-            const email = document.getElementById('auth-email').value.trim();
+            const username = document.getElementById('auth-username').value.trim();
             const password = document.getElementById('auth-password').value.trim();
             const errorEl = document.getElementById('auth-error');
             const msgEl = document.getElementById('auth-msg');
             errorEl.textContent = '';
             msgEl.textContent = '';
 
-            if (!email || !password) { errorEl.textContent = '请填写邮箱和密码'; return; }
+            if (!username) { errorEl.textContent = '请填写用户名'; return; }
+            if (!/^[a-zA-Z0-9_]+$/.test(username)) { errorEl.textContent = '用户名只能包含字母、数字和下划线'; return; }
+            if (!password) { errorEl.textContent = '请填写密码'; return; }
             if (password.length < 6) { errorEl.textContent = '密码至少需要6位'; return; }
 
+            const email = usernameToEmail(username);
             const btn = document.getElementById('auth-submit-btn');
             btn.disabled = true;
             btn.textContent = authMode === 'login' ? '登录中...' : '注册中...';
@@ -781,11 +810,11 @@
 
         function translateError(msg) {
             const map = {
-                'Invalid login credentials': '邮箱或密码错误',
-                'Email not confirmed': '邮箱未确认，请查看邮箱确认后再登录',
-                'User already registered': '该邮箱已注册，请直接登录',
+                'Invalid login credentials': '用户名或密码错误',
+                'Email not confirmed': '邮箱未确认，请到 Supabase 关闭邮箱验证',
+                'User already registered': '该用户名已被注册，请换一个或直接登录',
                 'Password should be at least 6 characters': '密码至少需要6位',
-                'Unable to validate email address': '邮箱格式不正确',
+                'Unable to validate email address': '用户名格式不正确',
             };
             return map[msg] || msg;
         }
@@ -818,7 +847,7 @@
         async function showApp() {
             document.getElementById('auth-screen').style.display = 'none';
             document.getElementById('main-app').style.display = 'block';
-            document.getElementById('user-email').textContent = currentUser.email;
+            document.getElementById('user-email').textContent = emailToUsername(currentUser.email);
 
             setToday();
             showLoading(true);
@@ -909,27 +938,7 @@
                 }
 
                 if (confirm(`发现 ${localWords.length} 个本地保存的单词，是否导入到云端？`)) {
-                    showLoading(true);
-                    let count = 0;
-                    for (const w of localWords) {
-                        try {
-                            await addWordToDB({
-                                word: w.word,
-                                meaning: w.meaning,
-                                synonyms: w.synonyms || [],
-                                distinguish: w.distinguish || [],
-                                rootWords: w.rootWords || w.root_words || [],
-                                date: w.date
-                            });
-                            count++;
-                        } catch (e) { /* skip duplicates */ }
-                    }
-                    await loadWords();
-                    renderWordList();
-                    updateReviewStats();
-                    updateStats();
-                    showLoading(false);
-                    showToast(`成功导入 ${count} 个单词到云端！`);
+                    await importWordsArray(localWords);
                     localStorage.removeItem('vocab_review_data');
                 } else {
                     localStorage.removeItem('vocab_review_data');
@@ -937,6 +946,90 @@
             } catch (e) {
                 // ignore
             }
+        }
+
+        // ====== 数据导入功能 ======
+        function togglePasteImport() {
+            const area = document.getElementById('paste-import-area');
+            area.style.display = area.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function hideImportCard() {
+            document.getElementById('import-data-card').style.display = 'none';
+        }
+
+        async function handleImportFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = async function(e) {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    const wordList = Array.isArray(data) ? data : (data.words || []);
+                    if (wordList.length === 0) {
+                        showToast('文件中没有找到单词数据');
+                        return;
+                    }
+                    if (confirm(`找到 ${wordList.length} 个单词，确定导入吗？`)) {
+                        await importWordsArray(wordList);
+                    }
+                } catch (err) {
+                    showToast('文件格式错误，请选择正确的 JSON 文件');
+                }
+                event.target.value = '';
+            };
+            reader.readAsText(file);
+        }
+
+        async function importPastedData() {
+            const text = document.getElementById('paste-import-text').value.trim();
+            if (!text) { showToast('请粘贴数据'); return; }
+
+            try {
+                const data = JSON.parse(text);
+                const wordList = Array.isArray(data) ? data : (data.words || []);
+                if (wordList.length === 0) {
+                    showToast('没有找到单词数据');
+                    return;
+                }
+                if (confirm(`找到 ${wordList.length} 个单词，确定导入吗？`)) {
+                    await importWordsArray(wordList);
+                    document.getElementById('paste-import-text').value = '';
+                }
+            } catch (err) {
+                showToast('数据格式错误，请粘贴正确的 JSON 数据');
+            }
+        }
+
+        async function importWordsArray(wordList) {
+            showLoading(true);
+            let successCount = 0;
+            let failCount = 0;
+
+            for (const w of wordList) {
+                try {
+                    await addWordToDB({
+                        word: w.word || w.Word || '',
+                        meaning: w.meaning || w.Meaning || '',
+                        synonyms: w.synonyms || [],
+                        distinguish: w.distinguish || [],
+                        rootWords: w.rootWords || w.root_words || [],
+                        date: w.date || new Date().toISOString().split('T')[0]
+                    });
+                    successCount++;
+                } catch (e) {
+                    failCount++;
+                }
+            }
+
+            await loadWords();
+            renderWordList();
+            updateReviewStats();
+            updateStats();
+            showLoading(false);
+
+            showToast(`导入完成！成功 ${successCount} 个${failCount ? '，跳过 ' + failCount + ' 个' : ''}`);
         }
 
         // ==================== 页面导航 ====================
@@ -1593,6 +1686,9 @@
 
         // ==================== 回车提交登录 ====================
         document.getElementById('auth-password').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') handleAuth();
+        });
+        document.getElementById('auth-username').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') handleAuth();
         });
 
