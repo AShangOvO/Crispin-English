@@ -716,13 +716,13 @@
         const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlxdGt4cHd0ZmZpYWZldm5raGxwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAzMzE0NDgsImV4cCI6MjEwNTkwNzQ0OH0.DT_VlmRIVcTlCoeAFAjke1tmoIdNYYchawrC5YtWi0Q';
         // =================================================
 
-        // 检查 Supabase 脚本是否加载成功
-        if (typeof supabase === 'undefined') {
-            document.getElementById('auth-error').textContent = '⚠️ 网络异常，Supabase 脚本加载失败，请刷新页面重试';
-            throw new Error('Supabase not loaded');
+        // 检查 Supabase 脚本是否加载成功（不用 throw，避免中断后续代码）
+        const supabaseLoaded = typeof supabase !== 'undefined';
+        if (!supabaseLoaded) {
+            console.error('Supabase 脚本加载失败');
         }
 
-        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        const supabaseClient = supabaseLoaded ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
         // ==================== 全局状态 ====================
         let words = [];
@@ -815,8 +815,8 @@
             btn.textContent = '连接中...';
 
             // 检查 supabase 库是否加载
-            if (typeof supabase === 'undefined') {
-                errorEl.textContent = '❌ Supabase 脚本加载失败！请检查网络，或尝试刷新页面';
+            if (!supabaseLoaded || !supabaseClient) {
+                errorEl.textContent = '❌ Supabase 脚本加载失败！请刷新页面重试，或检查网络';
                 btn.disabled = false;
                 btn.textContent = authMode === 'login' ? '登录' : '注册';
                 msgEl.textContent = '';
@@ -889,6 +889,7 @@
         }
 
         async function initAuth() {
+            if (!supabaseLoaded || !supabaseClient) return;
             try {
                 const { data: { session } } = await supabaseClient.auth.getSession();
                 if (session) {
