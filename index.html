@@ -428,10 +428,34 @@
             .review-container { padding-bottom: 180px; }
             .mobile-controls { display: flex; }
             .user-email { display: none; }
+
+            /* 手机端按钮触摸优化 */
+            .btn { min-height: 44px; }
+            .btn-sm { min-height: 36px; padding: 8px 14px; }
+            .mobile-btn { min-height: 48px; }
+            .nav-btn { padding: 10px 16px; }
+            .auth-submit { min-height: 48px; }
+            .remove-dist, .remove-root { min-width: 36px; min-height: 36px; }
+
+            /* 编辑模态框手机端适配 */
+            .modal {
+                padding: 20px 16px;
+                width: 95%;
+                max-height: 90vh;
+            }
+            .modal .form-input, .modal .form-textarea {
+                font-size: 16px; /* 防止 iOS 自动放大 */
+            }
+
+            /* 单词列表操作按钮加大 */
+            .word-actions .btn {
+                min-width: 44px; min-height: 44px;
+                font-size: 18px;
+            }
         }
         @media (max-width: 400px) {
             .main-word { font-size: 28px; }
-            .meaning-display { font-size: 17px; }
+            .meaning-display { font-size: 17px; }`
         }
     </style>
 </head>
@@ -502,8 +526,8 @@
                 <div class="card">
                     <div class="card-title">📅 选择日期</div>
                     <div class="date-selector">
-                        <input type="date" id="import-date" class="date-input">
-                        <button class="btn btn-outline btn-sm" onclick="setToday()">今天</button>
+                        <input type="date" id="import-date" class="date-input" onchange="renderWordList()">
+                        <button class="btn btn-outline btn-sm" onclick="setToday();renderWordList()">今天</button>
                     </div>
                 </div>
                 <div class="card">
@@ -539,6 +563,10 @@
                 </div>
                 <div class="card">
                     <div class="card-title">📋 已导入的单词 <span id="word-list-count" style="font-size:13px;color:#999;font-weight:normal"></span></div>
+                    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+                        <button class="btn btn-outline btn-sm" onclick="exportData()">📥 导出数据（备份）</button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteAllWords()">🗑️ 清空所有数据</button>
+                    </div>
                     <div id="word-list" class="word-list"></div>
                 </div>
             </div>
@@ -678,16 +706,16 @@
             <div class="form-group">
                 <label class="form-label">需要区分的词</label>
                 <div id="edit-distinguish-list"></div>
-                <button class="btn btn-outline btn-sm" onclick="addEditDistinguishField()" style="margin-top:8px">+ 添加区分词</button>
+                <button type="button" class="btn btn-outline btn-sm" onclick="addEditDistinguishField()" ontouchend="event.preventDefault();addEditDistinguishField()" style="margin-top:8px">+ 添加区分词</button>
             </div>
             <div class="form-group">
                 <label class="form-label">同词根词</label>
                 <div id="edit-root-words-list"></div>
-                <button class="btn btn-outline btn-sm" onclick="addEditRootWordField()" style="margin-top:8px">+ 添加同词根词</button>
+                <button type="button" class="btn btn-outline btn-sm" onclick="addEditRootWordField()" ontouchend="event.preventDefault();addEditRootWordField()" style="margin-top:8px">+ 添加同词根词</button>
             </div>
             <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
-                <button class="btn btn-outline" onclick="closeEditModal()">取消</button>
-                <button class="btn btn-primary" id="save-edit-btn" onclick="saveEdit()">保存</button>
+                <button type="button" class="btn btn-outline" onclick="closeEditModal()" ontouchend="event.preventDefault();closeEditModal()">取消</button>
+                <button type="button" class="btn btn-primary" id="save-edit-btn" onclick="saveEdit()" ontouchend="event.preventDefault();saveEdit()">保存</button>
             </div>
         </div>
     </div>
@@ -732,26 +760,77 @@
 
         // ==================== 发音功能 ====================
         const speechSynth = window.speechSynthesis;
+        var voicesReady = false;
+
+        // 预加载语音列表（手机端首次加载较慢）
+        function loadVoices() {
+            try {
+                const voices = speechSynth.getVoices();
+                if (voices && voices.length > 0) voicesReady = true;
+            } catch (e) {}
+        }
+        loadVoices();
+        if (speechSynth.onvoiceschanged !== undefined) {
+            speechSynth.onvoiceschanged = function() { loadVoices(); };
+        }
+        // 兜底：500ms 后再尝试加载一次
+        setTimeout(loadVoices, 500);
+        setTimeout(loadVoices, 1500);
 
         function speakWord(text) {
             if (!text) {
                 if (studyWords.length === 0) return;
                 text = studyWords[studyIndex].word;
             }
-            speechSynth.cancel();
-            const utterance = new SpeechSynthesisUtterance(text);
-            utterance.lang = 'en-US';
-            utterance.rate = 0.9;
-            utterance.pitch = 1;
-            const voices = speechSynth.getVoices();
-            const usVoice = voices.find(v => v.lang === 'en-US' && v.name.includes('US')) || voices.find(v => v.lang === 'en-US');
-            if (usVoice) utterance.voice = usVoice;
 
-            const speakBtn = document.querySelector('.nav-arrow[title="发音 (P)"]');
-            utterance.onstart = () => { if (speakBtn) speakBtn.classList.add('speaking'); };
-            utterance.onend = () => { if (speakBtn) speakBtn.classList.remove('speaking'); };
-            utterance.onerror = () => { if (speakBtn) speakBtn.classList.remove('speaking'); };
-            speechSynth.speak(utterance);
+            // 检查浏览器是否支持
+            if (!speechSynth) {
+                showToast('当前浏览器不支持发音功能');
+                return;
+            }
+
+            // 停止之前的发音（安全调用）
+            try { speechSynth.cancel(); } catch (e) {}
+
+            function doSpeak() {
+                try {
+                    const utterance = new SpeechSynthesisUtterance(text);
+                    utterance.lang = 'en-US';
+                    utterance.rate = 0.9;
+                    utterance.pitch = 1;
+
+                    // 选择美式发音
+                    try {
+                        const voices = speechSynth.getVoices();
+                        if (voices && voices.length > 0) {
+                            const usVoice = voices.find(v => v.lang === 'en-US' && v.name.includes('US'))
+                                         || voices.find(v => v.lang === 'en-US')
+                                         || voices.find(v => v.lang && v.lang.startsWith('en'));
+                            if (usVoice) utterance.voice = usVoice;
+                        }
+                    } catch (e) {}
+
+                    const speakBtn = document.querySelector('.nav-arrow[title="发音 (P)"]');
+                    utterance.onstart = () => { if (speakBtn) speakBtn.classList.add('speaking'); };
+                    utterance.onend = () => { if (speakBtn) speakBtn.classList.remove('speaking'); };
+                    utterance.onerror = (e) => {
+                        if (speakBtn) speakBtn.classList.remove('speaking');
+                        // 不弹提示（手机端取消发音也会触发 error）
+                    };
+
+                    speechSynth.speak(utterance);
+                } catch (e) {
+                    showToast('发音出错: ' + e.message);
+                }
+            }
+
+            // 如果语音列表还没加载好，稍等再发音
+            if (!voicesReady) {
+                loadVoices();
+                setTimeout(doSpeak, 200);
+            } else {
+                doSpeak();
+            }
         }
 
         if (speechSynth.onvoiceschanged !== undefined) {
@@ -1105,6 +1184,48 @@
             showToast(`导入完成！成功 ${successCount} 个${failCount ? '，跳过 ' + failCount + ' 个' : ''}`);
         }
 
+        // ====== 导出数据（备份）======
+        function exportData() {
+            if (words.length === 0) {
+                showToast('没有数据可以导出');
+                return;
+            }
+            const dataStr = JSON.stringify(words, null, 2);
+            const blob = new Blob([dataStr], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'vocab-backup-' + new Date().toISOString().split('T')[0] + '.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showToast(`已导出 ${words.length} 个单词的备份文件`);
+        }
+
+        // ====== 清空所有数据 ======
+        async function deleteAllWords() {
+            if (!confirm('⚠️ 确定要删除所有单词数据吗？此操作不可恢复！')) return;
+            if (!confirm('再次确认：真的要清空全部数据吗？建议先导出备份！')) return;
+
+            showLoading(true);
+            try {
+                const { error } = await supabaseClient
+                    .from('words')
+                    .delete()
+                    .eq('user_id', currentUser.id);
+                if (error) throw error;
+                words = [];
+                renderWordList();
+                updateReviewStats();
+                updateStats();
+                showToast('✅ 所有数据已清空');
+            } catch (err) {
+                showToast('删除失败: ' + err.message);
+            }
+            showLoading(false);
+        }
+
         // ==================== 页面导航 ====================
         function showPage(pageName, btn) {
             document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -1261,8 +1382,8 @@
                         </div>
                     </div>
                     <div class="word-actions">
-                        <button class="btn btn-outline btn-sm" onclick="editWord('${w.id}')">✏️</button>
-                        <button class="btn btn-danger btn-sm" onclick="deleteWord('${w.id}')">🗑️</button>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="editWord('${w.id}')" ontouchend="event.preventDefault();editWord('${w.id}')">✏️</button>
+                        <button type="button" class="btn btn-danger btn-sm" onclick="deleteWord('${w.id}')" ontouchend="event.preventDefault();deleteWord('${w.id}')">🗑️</button>
                     </div>
                 </div>`;
             }).join('');
@@ -1317,35 +1438,42 @@
         }
 
         function editWord(id) {
-            const w = words.find(w => w.id === id);
-            if (!w) return;
-            currentEditId = id;
+            try {
+                const w = words.find(w => w.id === id);
+                if (!w) {
+                    showToast('找不到该单词');
+                    return;
+                }
+                currentEditId = id;
 
-            document.getElementById('edit-word').value = w.word;
-            document.getElementById('edit-meaning').value = w.meaning;
+                document.getElementById('edit-word').value = w.word || '';
+                document.getElementById('edit-meaning').value = w.meaning || '';
 
-            editSynonyms = [...(w.synonyms || [])];
-            renderEditSynonymTags();
+                editSynonyms = [...(w.synonyms || [])];
+                renderEditSynonymTags();
 
-            const distList = document.getElementById('edit-distinguish-list');
-            distList.innerHTML = '';
-            (w.distinguish || []).forEach(d => {
-                const item = document.createElement('div');
-                item.className = 'distinguish-item';
-                item.innerHTML = `<input type="text" class="form-input" placeholder="单词" value="${d.word}"><input type="text" class="form-input" placeholder="释义" value="${d.meaning}"><button class="remove-dist" onclick="this.parentElement.remove()">×</button>`;
-                distList.appendChild(item);
-            });
+                const distList = document.getElementById('edit-distinguish-list');
+                distList.innerHTML = '';
+                (w.distinguish || []).forEach(d => {
+                    const item = document.createElement('div');
+                    item.className = 'distinguish-item';
+                    item.innerHTML = `<input type="text" class="form-input" placeholder="单词" value="${d.word || ''}"><input type="text" class="form-input" placeholder="释义" value="${d.meaning || ''}"><button type="button" class="remove-dist" onclick="this.parentElement.remove()">×</button>`;
+                    distList.appendChild(item);
+                });
 
-            const rootList = document.getElementById('edit-root-words-list');
-            rootList.innerHTML = '';
-            (w.root_words || []).forEach(r => {
-                const item = document.createElement('div');
-                item.className = 'root-word-item';
-                item.innerHTML = `<input type="text" class="form-input" placeholder="单词" value="${r.word}"><input type="text" class="form-input" placeholder="释义" value="${r.meaning}"><button class="remove-root" onclick="this.parentElement.remove()">×</button>`;
-                rootList.appendChild(item);
-            });
+                const rootList = document.getElementById('edit-root-words-list');
+                rootList.innerHTML = '';
+                (w.root_words || []).forEach(r => {
+                    const item = document.createElement('div');
+                    item.className = 'root-word-item';
+                    item.innerHTML = `<input type="text" class="form-input" placeholder="单词" value="${r.word || ''}"><input type="text" class="form-input" placeholder="释义" value="${r.meaning || ''}"><button type="button" class="remove-root" onclick="this.parentElement.remove()">×</button>`;
+                    rootList.appendChild(item);
+                });
 
-            document.getElementById('edit-modal').classList.add('show');
+                document.getElementById('edit-modal').classList.add('show');
+            } catch (e) {
+                showToast('打开编辑失败: ' + e.message);
+            }
         }
 
         function closeEditModal() {
@@ -1591,8 +1719,12 @@
                 rootBox.style.display = 'none';
             }
 
-            // 自动发音
-            setTimeout(() => speakWord(word.word), 100);
+            // 自动发音（手机端可能因系统限制无法自动播放，点按钮即可）
+            if (speechSynth) {
+                setTimeout(() => {
+                    try { speakWord(word.word); } catch (e) {}
+                }, 200);
+            }
         }
 
         function toggleMeaning() {
