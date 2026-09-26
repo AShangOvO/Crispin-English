@@ -728,9 +728,8 @@
 
     <script>
         // ==================== 配置区域 ====================
-        // ⚠️ 请将下面两个值替换为你自己的 Supabase 项目信息
-        const SUPABASE_URL = 'https://yqtkxpwtffiafevnkhlp.supabase.co';
-        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlxdGt4cHd0ZmZpYWZldm5raGxwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAzMzE0NDgsImV4cCI6MjEwNTkwNzQ0OH0.DT_VlmRIVcTlCoeAFAjke1tmoIdNYYchawrC5YtWi0Q';
+        var SUPABASE_URL = 'https://yqtkxpwtffiafevnkhlp.supabase.co';
+        var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlxdGt4cHd0ZmZpYWZldm5raGxwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAzMzE0NDgsImV4cCI6MjEwNTkwNzQ0OH0.DT_VlmRIVcTlCoeAFAjke1tmoIdNYYchawrC5YtWi0Q';
         // =================================================
 
         // ==================== 全局状态 ====================
@@ -743,7 +742,13 @@
         var authMode = 'login';
         var supabaseLoaded = false;
         var supabaseClient = null;
-        const REVIEW_INTERVALS = [0, 1, 2, 4, 7, 15, 30, 60];
+        var REVIEW_INTERVALS = [0, 1, 2, 4, 7, 15, 30, 60];
+        var synonyms = [];
+        var editSynonyms = [];
+        var synonymInput = null;
+        var synonymsContainer = null;
+        var editSynonymInput = null;
+        var editSynonymsContainer = null;
 
         // 初始化 Supabase（安全包裹，出错不中断脚本）
         try {
@@ -759,23 +764,27 @@
         }
 
         // ==================== 发音功能 ====================
-        const speechSynth = window.speechSynthesis;
+        var speechSynth = null;
         var voicesReady = false;
+        try { speechSynth = window.speechSynthesis || null; } catch (e) {}
 
         // 预加载语音列表（手机端首次加载较慢）
         function loadVoices() {
             try {
-                const voices = speechSynth.getVoices();
+                if (!speechSynth) return;
+                var voices = speechSynth.getVoices();
                 if (voices && voices.length > 0) voicesReady = true;
             } catch (e) {}
         }
-        loadVoices();
-        if (speechSynth.onvoiceschanged !== undefined) {
-            speechSynth.onvoiceschanged = function() { loadVoices(); };
-        }
+        try { loadVoices(); } catch (e) {}
+        try {
+            if (speechSynth && typeof speechSynth.onvoiceschanged !== 'undefined') {
+                speechSynth.onvoiceschanged = function() { loadVoices(); };
+            }
+        } catch (e) {}
         // 兜底：500ms 后再尝试加载一次
-        setTimeout(loadVoices, 500);
-        setTimeout(loadVoices, 1500);
+        setTimeout(function() { try { loadVoices(); } catch (e) {} }, 500);
+        setTimeout(function() { try { loadVoices(); } catch (e) {} }, 1500);
 
         function speakWord(text) {
             if (!text) {
@@ -785,13 +794,22 @@
 
             // 检查浏览器是否支持
             if (!speechSynth) {
-                showToast('当前浏览器不支持发音功能');
+                // 备用方案：用 Google TTS 在线发音
+                try {
+                    var audio = new Audio('https://translate.google.com/translate_tts?ie=UTF-8&q=' + encodeURIComponent(text) + '&tl=en&client=tw-ob');
+                    audio.play().catch(function() {
+                        showToast('发音失败，请尝试使用 Chrome 浏览器');
+                    });
+                } catch (e2) {
+                    showToast('当前浏览器不支持发音，请使用 Chrome 或 Safari');
+                }
                 return;
             }
 
             // 停止之前的发音（安全调用）
             try { speechSynth.cancel(); } catch (e) {}
 
+            var speakFailed = false;
             function doSpeak() {
                 try {
                     const utterance = new SpeechSynthesisUtterance(text);
@@ -815,7 +833,14 @@
                     utterance.onend = () => { if (speakBtn) speakBtn.classList.remove('speaking'); };
                     utterance.onerror = (e) => {
                         if (speakBtn) speakBtn.classList.remove('speaking');
-                        // 不弹提示（手机端取消发音也会触发 error）
+                        // 原生发音失败，用 Google TTS 备用
+                        if (!speakFailed) {
+                            speakFailed = true;
+                            try {
+                                var audio = new Audio('https://translate.google.com/translate_tts?ie=UTF-8&q=' + encodeURIComponent(text) + '&tl=en&client=tw-ob');
+                                audio.play().catch(function(){});
+                            } catch (e2) {}
+                        }
                     };
 
                     speechSynth.speak(utterance);
@@ -833,9 +858,12 @@
             }
         }
 
-        if (speechSynth.onvoiceschanged !== undefined) {
-            speechSynth.onvoiceschanged = () => speechSynth.getVoices();
-        }
+        // 安全注册语音变更回调
+        try {
+            if (speechSynth && typeof speechSynth.onvoiceschanged !== 'undefined') {
+                speechSynth.onvoiceschanged = function() { loadVoices(); };
+            }
+        } catch (e) {}
 
         // ==================== 认证功能 ====================
 
@@ -1244,23 +1272,24 @@
         }
 
         // 同义词标签输入
-        const synonymInput = document.getElementById('synonym-input');
-        const synonymsContainer = document.getElementById('synonyms-container');
-        var synonyms = [];
-
-        synonymInput.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                const value = this.value.trim();
-                if (value && !synonyms.includes(value)) {
-                    synonyms.push(value);
-                    renderSynonymTags();
+        synonymInput = document.getElementById('synonym-input');
+        synonymsContainer = document.getElementById('synonyms-container');
+        if (synonymInput) {
+            synonymInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    var value = this.value.trim();
+                    if (value && synonyms.indexOf(value) === -1) {
+                        synonyms.push(value);
+                        renderSynonymTags();
+                    }
+                    this.value = '';
                 }
-                this.value = '';
-            }
-        });
+            });
+        }
 
         function renderSynonymTags() {
+            if (!synonymsContainer || !synonymInput) return;
             synonymsContainer.querySelectorAll('.tag').forEach(t => t.remove());
             synonyms.forEach((s, i) => {
                 const tag = document.createElement('span');
@@ -1390,23 +1419,24 @@
         }
 
         // ==================== 编辑功能 ====================
-        var editSynonyms = [];
-        const editSynonymInput = document.getElementById('edit-synonym-input');
-        const editSynonymsContainer = document.getElementById('edit-synonyms-container');
-
-        editSynonymInput.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                const value = this.value.trim();
-                if (value && !editSynonyms.includes(value)) {
-                    editSynonyms.push(value);
-                    renderEditSynonymTags();
+        editSynonymInput = document.getElementById('edit-synonym-input');
+        editSynonymsContainer = document.getElementById('edit-synonyms-container');
+        if (editSynonymInput) {
+            editSynonymInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    var value = this.value.trim();
+                    if (value && editSynonyms.indexOf(value) === -1) {
+                        editSynonyms.push(value);
+                        renderEditSynonymTags();
+                    }
+                    this.value = '';
                 }
-                this.value = '';
-            }
-        });
+            });
+        }
 
         function renderEditSynonymTags() {
+            if (!editSynonymsContainer || !editSynonymInput) return;
             editSynonymsContainer.querySelectorAll('.tag').forEach(t => t.remove());
             editSynonyms.forEach((s, i) => {
                 const tag = document.createElement('span');
@@ -1890,12 +1920,27 @@
         }
 
         // ==================== 回车提交登录 ====================
-        document.getElementById('auth-password').addEventListener('keydown', function(e) {
+        var authPasswordEl = document.getElementById('auth-password');
+        var authUsernameEl = document.getElementById('auth-username');
+        if (authPasswordEl) authPasswordEl.addEventListener('keydown', function(e) {
             if (e.key === 'Enter') handleAuth();
         });
-        document.getElementById('auth-username').addEventListener('keydown', function(e) {
+        if (authUsernameEl) authUsernameEl.addEventListener('keydown', function(e) {
             if (e.key === 'Enter') handleAuth();
         });
+
+        // ==================== 全局错误捕捉（显示在页面上便于排查）====================
+        window.onerror = function(msg, url, line) {
+            console.error('JS Error:', msg, 'at line', line);
+            // 只在页面上有toast时才提示，避免弹窗打扰
+            try {
+                var toast = document.getElementById('toast');
+                if (toast && !toast.classList.contains('show')) {
+                    // 不显示给用户（避免频繁弹出），只记录
+                }
+            } catch (e) {}
+            return false; // 不阻止浏览器默认行为
+        };
 
         // ==================== 初始化 ====================
         initAuth();
