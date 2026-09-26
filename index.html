@@ -506,23 +506,6 @@
         <div class="container">
             <!-- 导入页面 -->
             <div id="page-import" class="page active">
-                <div class="card" id="import-data-card">
-                    <div class="card-title">📦 导入旧数据</div>
-                    <p style="font-size:13px;color:#666;margin-bottom:12px">
-                        如果之前在本地版本导出过数据文件（.json），在这里导入到云端。<br>
-                        <b>导入方法：</b>打开旧版网页 → 点击"导出数据"按钮 → 在这里上传 JSON 文件。
-                    </p>
-                    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-                        <input type="file" id="import-file-input" accept=".json" style="display:none" onchange="handleImportFile(event)">
-                        <button class="btn btn-outline" onclick="document.getElementById('import-file-input').click()">📂 选择 JSON 文件</button>
-                        <button class="btn btn-outline" onclick="togglePasteImport()">📋 粘贴数据</button>
-                        <button class="btn btn-outline" onclick="hideImportCard()">关闭</button>
-                    </div>
-                    <div id="paste-import-area" style="display:none;margin-top:12px">
-                        <textarea id="paste-import-text" class="form-textarea" placeholder='粘贴 JSON 数据，例如 [{"word":"apple","meaning":"苹果",...}]' style="min-height:100px"></textarea>
-                        <button class="btn btn-primary" onclick="importPastedData()" style="margin-top:8px">📥 导入粘贴的数据</button>
-                    </div>
-                </div>
                 <div class="card">
                     <div class="card-title">📅 选择日期</div>
                     <div class="date-selector">
@@ -792,69 +775,80 @@
                 text = studyWords[studyIndex].word;
             }
 
-            // 检查浏览器是否支持
-            if (!speechSynth) {
-                // 备用方案：用 Google TTS 在线发音
-                try {
-                    var audio = new Audio('https://translate.google.com/translate_tts?ie=UTF-8&q=' + encodeURIComponent(text) + '&tl=en&client=tw-ob');
-                    audio.play().catch(function() {
-                        showToast('发音失败，请尝试使用 Chrome 浏览器');
-                    });
-                } catch (e2) {
-                    showToast('当前浏览器不支持发音，请使用 Chrome 或 Safari');
-                }
+            var isMobile = /Android|iPhone|iPad|iPod|Mobile|Xiaomi|MIUI/i.test(navigator.userAgent);
+
+            // 手机端：直接用有道词典 TTS（国内稳定，不依赖浏览器语音引擎）
+            if (isMobile) {
+                speakViaYoudao(text);
                 return;
             }
 
-            // 停止之前的发音（安全调用）
+            // 桌面端：优先用原生 speechSynthesis
+            if (!speechSynth) {
+                speakViaYoudao(text);
+                return;
+            }
+
             try { speechSynth.cancel(); } catch (e) {}
 
             var speakFailed = false;
             function doSpeak() {
                 try {
-                    const utterance = new SpeechSynthesisUtterance(text);
+                    var utterance = new SpeechSynthesisUtterance(text);
                     utterance.lang = 'en-US';
                     utterance.rate = 0.9;
                     utterance.pitch = 1;
-
-                    // 选择美式发音
                     try {
-                        const voices = speechSynth.getVoices();
+                        var voices = speechSynth.getVoices();
                         if (voices && voices.length > 0) {
-                            const usVoice = voices.find(v => v.lang === 'en-US' && v.name.includes('US'))
-                                         || voices.find(v => v.lang === 'en-US')
-                                         || voices.find(v => v.lang && v.lang.startsWith('en'));
+                            var usVoice = voices.find(function(v) { return v.lang === 'en-US' && v.name.indexOf('US') !== -1; })
+                                       || voices.find(function(v) { return v.lang === 'en-US'; })
+                                       || voices.find(function(v) { return v.lang && v.lang.indexOf('en') === 0; });
                             if (usVoice) utterance.voice = usVoice;
                         }
                     } catch (e) {}
 
-                    const speakBtn = document.querySelector('.nav-arrow[title="发音 (P)"]');
-                    utterance.onstart = () => { if (speakBtn) speakBtn.classList.add('speaking'); };
-                    utterance.onend = () => { if (speakBtn) speakBtn.classList.remove('speaking'); };
-                    utterance.onerror = (e) => {
+                    var speakBtn = document.querySelector('.nav-arrow[title="发音 (P)"]');
+                    utterance.onstart = function() { if (speakBtn) speakBtn.classList.add('speaking'); };
+                    utterance.onend = function() { if (speakBtn) speakBtn.classList.remove('speaking'); };
+                    utterance.onerror = function() {
                         if (speakBtn) speakBtn.classList.remove('speaking');
-                        // 原生发音失败，用 Google TTS 备用
-                        if (!speakFailed) {
-                            speakFailed = true;
-                            try {
-                                var audio = new Audio('https://translate.google.com/translate_tts?ie=UTF-8&q=' + encodeURIComponent(text) + '&tl=en&client=tw-ob');
-                                audio.play().catch(function(){});
-                            } catch (e2) {}
-                        }
+                        if (!speakFailed) { speakFailed = true; speakViaYoudao(text); }
                     };
-
                     speechSynth.speak(utterance);
                 } catch (e) {
-                    showToast('发音出错: ' + e.message);
+                    speakViaYoudao(text);
                 }
             }
 
-            // 如果语音列表还没加载好，稍等再发音
             if (!voicesReady) {
                 loadVoices();
                 setTimeout(doSpeak, 200);
             } else {
                 doSpeak();
+            }
+        }
+
+        // 有道词典 TTS 发音（国内可靠，手机浏览器通用）
+        var currentAudio = null;
+        function speakViaYoudao(word) {
+            try {
+                // 先停掉上一个音频
+                if (currentAudio) { try { currentAudio.pause(); } catch(e){} currentAudio = null; }
+
+                // 有道词典发音接口 type=2 为美式发音
+                var url = 'https://dict.youdao.com/dictvoice?audio=' + encodeURIComponent(word) + '&type=2';
+                currentAudio = new Audio(url);
+                currentAudio.play().catch(function() {
+                    // 有道失败 → 尝试百度 TTS
+                    var baiduUrl = 'https://fanyi.baidu.com/gettts?lan=en&text=' + encodeURIComponent(word) + '&spd=5&source=web';
+                    currentAudio = new Audio(baiduUrl);
+                    currentAudio.play().catch(function() {
+                        showToast('发音失败，请检查网络');
+                    });
+                });
+            } catch (e) {
+                showToast('发音出错');
             }
         }
 
@@ -1749,11 +1743,11 @@
                 rootBox.style.display = 'none';
             }
 
-            // 自动发音（手机端可能因系统限制无法自动播放，点按钮即可）
-            if (speechSynth) {
-                setTimeout(() => {
+            // 自动发音（手机端浏览器可能禁止自动播放，点🔊按钮即可）
+            if (speechSynth || true) {
+                setTimeout(function() {
                     try { speakWord(word.word); } catch (e) {}
-                }, 200);
+                }, 300);
             }
         }
 
