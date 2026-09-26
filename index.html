@@ -1770,36 +1770,49 @@
         }
 
         // ==================== 学习功能 ====================
+        // ====== 单个单词标记为已复习（方案A：离开/看释义时才标记）======
+        var markedThisSession = {}; // 本次复习已标记的词，防止重复标记
+
+        function markWordReviewed(word) {
+            if (!word || markedThisSession[word.id]) return;
+            markedThisSession[word.id] = true;
+
+            var today = new Date().toISOString().split('T')[0];
+            var newCount = (word.review_count || 0) + 1;
+            var intervalIndex = Math.min(newCount, REVIEW_INTERVALS.length - 1);
+            var nextDate = new Date();
+            nextDate.setDate(nextDate.getDate() + REVIEW_INTERVALS[intervalIndex]);
+            var nextReview = nextDate.toISOString().split('T')[0];
+
+            word.last_review = today;
+            word.review_count = newCount;
+            word.next_review = nextReview;
+
+            // 同步到本地缓存
+            for (var i = 0; i < words.length; i++) {
+                if (words[i].id === word.id) {
+                    words[i].last_review = today;
+                    words[i].review_count = newCount;
+                    words[i].next_review = nextReview;
+                    break;
+                }
+            }
+
+            // 写入数据库
+            updateWordInDB(word.id, {
+                lastReview: today,
+                reviewCount: newCount,
+                nextReview: nextReview
+            }).catch(function() {});
+        }
+
         async function startStudy(wordList) {
             studyWords = shuffleEnabled ? shuffleArray(wordList) : [...wordList];
             studyIndex = 0;
             meaningVisible = false;
+            markedThisSession = {}; // 重置本次已标记记录
 
-            // 更新复习数据
-            const today = new Date().toISOString().split('T')[0];
-            for (const w of studyWords) {
-                const newCount = (w.review_count || 0) + 1;
-                const intervalIndex = Math.min(newCount, REVIEW_INTERVALS.length - 1);
-                const nextDate = new Date();
-                nextDate.setDate(nextDate.getDate() + REVIEW_INTERVALS[intervalIndex]);
-                const nextReview = nextDate.toISOString().split('T')[0];
-
-                w.last_review = today;
-                w.review_count = newCount;
-                w.next_review = nextReview;
-
-                updateWordInDB(w.id, {
-                    lastReview: today,
-                    reviewCount: newCount,
-                    nextReview
-                }).catch(() => {});
-            }
-
-            // 同步本地缓存
-            words = words.map(w => {
-                const updated = studyWords.find(sw => sw.id === w.id);
-                return updated || w;
-            });
+            // ⚠️ 不再在这里批量标记，改为逐个标记（见 markWordReviewed）
 
             document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
             document.getElementById('page-study').classList.add('active');
@@ -1887,6 +1900,8 @@
                 display.style.height = 'auto';
                 display.classList.add('show');
                 hint.textContent = '点击屏幕或按空格键隐藏释义';
+                // 显示释义 = 认真看了这个词 → 标记为已复习
+                if (studyWords[studyIndex]) markWordReviewed(studyWords[studyIndex]);
             } else {
                 display.classList.remove('show');
                 display.style.visibility = 'hidden';
@@ -1932,6 +1947,8 @@
 
         function prevWord() {
             if (studyIndex > 0) {
+                // 离开当前词 → 标记已复习
+                if (studyWords[studyIndex]) markWordReviewed(studyWords[studyIndex]);
                 studyIndex--;
                 renderStudyWord();
             }
@@ -1939,6 +1956,8 @@
 
         function nextWord() {
             if (studyIndex < studyWords.length - 1) {
+                // 离开当前词 → 标记已复习
+                if (studyWords[studyIndex]) markWordReviewed(studyWords[studyIndex]);
                 studyIndex++;
                 renderStudyWord();
             } else {
@@ -1947,9 +1966,12 @@
         }
 
         function exitReview() {
+            // 退出时标记最后停留的词（如果看过释义则已标记，这里补充翻页未标记的情况）
+            // 注意：不标记最后一个词，因为用户可能只是打开没看就退出了
             document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
             document.getElementById('page-review').classList.add('active');
             updateReviewStats();
+            updateStats();
         }
 
         // ==================== 键盘事件 ====================
