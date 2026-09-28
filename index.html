@@ -386,6 +386,7 @@
         /* ====== 导航按钮 ====== */
         .review-nav {
             display: flex; justify-content: center; gap: 16px; margin-bottom: 16px;
+            position: relative;
         }
         .nav-arrow {
             width: 48px; height: 48px; border-radius: 50%;
@@ -398,6 +399,20 @@
         .nav-arrow.speaking { animation: pulse 1s infinite; }
         @keyframes pulse {
             0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); }
+        }
+
+        /* 「忘记了」按钮：与圆形按钮同尺寸，固定在行最右侧 */
+        .forget-btn {
+            position: absolute; right: 0; top: 50%;
+            transform: translateY(-50%);
+            font-size: 12px; font-weight: 600; letter-spacing: -1px;
+            border-color: var(--danger); color: var(--danger);
+        }
+        .forget-btn:hover { background: var(--danger); color: white; }
+        .forget-btn.disabled,
+        .forget-btn.disabled:hover {
+            opacity: 0.35; cursor: not-allowed;
+            background: white; color: var(--danger); border-color: var(--border);
         }
 
         .keyboard-hints {
@@ -422,13 +437,16 @@
             position: fixed; bottom: 0; left: 0; right: 0;
             box-shadow: 0 -2px 10px rgba(0,0,0,0.08); z-index: 50;
         }
-        .mobile-nav { display: flex; justify-content: space-around; align-items: center; }
+        .mobile-nav { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+        .mobile-nav .mobile-btn { flex: 1; padding: 10px 2px; font-size: 12px; }
         .mobile-btn {
             background: var(--bg); border: 1px solid var(--border);
             border-radius: 10px; padding: 10px 16px; font-size: 13px;
             text-align: center; cursor: pointer; transition: all 0.15s;
             user-select: none; -webkit-user-select: none;
         }
+        #forget-btn-mobile { border-color: var(--danger); color: var(--danger); }
+        #forget-btn-mobile.disabled { opacity: 0.35; cursor: not-allowed; }
         .mobile-btn:active {
             background: #e0e0e0; transform: scale(0.95);
         }
@@ -697,6 +715,7 @@
                         <button class="btn btn-outline" onclick="exitReview()">← 返回</button>
                         <div class="review-progress">
                             <span class="review-counter" id="current-index">1</span> / <span id="total-words">0</span>
+                            <span id="forget-count" style="display:none;color:#FF4D4F;font-size:13px;margin-left:8px"></span>
                         </div>
                     </div>
 
@@ -732,11 +751,13 @@
                         <button class="nav-arrow" onclick="prevWord()" title="上一个 (←)">◀</button>
                         <button class="nav-arrow" onclick="speakWord()" title="发音 (P)">🔊</button>
                         <button class="nav-arrow" onclick="nextWord()" title="下一个 (→)">▶</button>
+                        <button class="nav-arrow forget-btn" id="forget-btn-desktop" onclick="forgetWord()" title="忘记了 (X)">忘记了</button>
                     </div>
                     <div class="keyboard-hints">
                         <div class="key-hint"><span class="key">←</span> 上一个</div>
                         <div class="key-hint"><span class="key">→</span> 下一个</div>
                         <div class="key-hint"><span class="key">Space</span> 显示释义</div>
+                        <div class="key-hint"><span class="key">X</span> 忘记了</div>
                         <div class="key-hint"><span class="key">P</span> 发音</div>
                         <div class="key-hint"><span class="key">S</span> 同义词</div>
                         <div class="key-hint"><span class="key">D</span> 易混词</div>
@@ -750,6 +771,7 @@
                         <div class="mobile-btn" onclick="prevWord()"><span class="btn-icon">◀</span>上一个</div>
                         <div class="mobile-btn" onclick="speakWord()"><span class="btn-icon">🔊</span>发音</div>
                         <div class="mobile-btn" onclick="nextWord()"><span class="btn-icon">▶</span>下一个</div>
+                        <div class="mobile-btn" id="forget-btn-mobile" onclick="forgetWord()"><span class="btn-icon">❌</span>忘记了</div>
                     </div>
                     <div class="mobile-features">
                         <div class="mobile-btn" onclick="toggleMeaning()"><span class="btn-icon">👁️</span>释义</div>
@@ -822,6 +844,8 @@
         var REVIEW_INTERVALS = [0, 1, 2, 4, 7, 15, 30, 60];
         var synonyms = [];
         var editSynonyms = [];
+        var forgetCounts = {};   // 本次复习：单词id → 已重做次数（上限3）
+        var forgetClicks = 0;    // 本次复习：忘记总次数（显示用）
         var synonymInput = null;
         var synonymsContainer = null;
         var editSynonymInput = null;
@@ -1811,6 +1835,8 @@
             studyIndex = 0;
             meaningVisible = false;
             markedThisSession = {}; // 重置本次已标记记录
+            forgetCounts = {};      // 重置「忘记了」次数
+            forgetClicks = 0;
 
             // ⚠️ 不再在这里批量标记，改为逐个标记（见 markWordReviewed）
 
@@ -1837,6 +1863,27 @@
 
             document.getElementById('current-index').textContent = studyIndex + 1;
             document.getElementById('total-words').textContent = studyWords.length;
+
+            // 「忘记了」按钮状态：当前词已达3次上限则禁用
+            var canForget = (forgetCounts[word.id] || 0) < 3;
+            var fbD = document.getElementById('forget-btn-desktop');
+            var fbM = document.getElementById('forget-btn-mobile');
+            if (fbD) {
+                fbD.classList.toggle('disabled', !canForget);
+                fbD.title = canForget ? '忘记了 (X)' : '该词已重做3次，请直接过掉 (X)';
+            }
+            if (fbM) fbM.classList.toggle('disabled', !canForget);
+
+            // 忘记计数显示
+            var fc = document.getElementById('forget-count');
+            if (fc) {
+                if (forgetClicks > 0) {
+                    fc.style.display = 'inline';
+                    fc.textContent = '🔁 ' + forgetClicks;
+                } else {
+                    fc.style.display = 'none';
+                }
+            }
 
             // 同义词
             const synonymBox = document.getElementById('synonym-box');
@@ -1965,6 +2012,34 @@
             }
         }
 
+        // ====== 「忘记了」：移到队尾稍后重来（最多重复3次）======
+        function forgetWord() {
+            if (studyWords.length === 0) return;
+            var word = studyWords[studyIndex];
+            if (!word) return;
+
+            var cnt = forgetCounts[word.id] || 0;
+            if (cnt >= 3) return; // 已达3次上限，按钮已禁用
+            forgetCounts[word.id] = cnt + 1;
+            forgetClicks++;
+
+            // 移到队尾（索引不变：非末尾词→自然指向下个；末尾词→原地循环再出现）
+            studyWords.splice(studyIndex, 1);
+            studyWords.push(word);
+
+            // 数据层：锁定 next_review=今天 → 明天智能复习必出（不标记已复习、间隔不延长）
+            var today = new Date().toISOString().split('T')[0];
+            word.next_review = today;
+            for (var i = 0; i < words.length; i++) {
+                if (words[i].id === word.id) { words[i].next_review = today; break; }
+            }
+            updateWordInDB(word.id, { nextReview: today }).catch(function() {});
+
+            // 直接执行，无任何提示
+            meaningVisible = false;
+            renderStudyWord();
+        }
+
         function exitReview() {
             // 退出时标记最后停留的词（如果看过释义则已标记，这里补充翻页未标记的情况）
             // 注意：不标记最后一个词，因为用户可能只是打开没看就退出了
@@ -1985,6 +2060,7 @@
                 case 'ArrowLeft': e.preventDefault(); prevWord(); break;
                 case 'ArrowRight': e.preventDefault(); nextWord(); break;
                 case 'p': case 'P': speakWord(); break;
+                case 'x': case 'X': forgetWord(); break;
                 case 's': case 'S': toggleSynonyms(); break;
                 case 'd': case 'D': showAllDistMeanings(); break;
                 case 'f': case 'F': showAllRootMeanings(); break;
