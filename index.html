@@ -875,6 +875,7 @@
         var editSynonyms = [];
         var forgetCounts = {};   // 本次复习：单词id → 已重做次数（上限3）
         var forgetClicks = 0;    // 本次复习：忘记总次数（显示用）
+        var pendingForgetId = null; // 已点「忘记了」但还没离开的单词id（离开时才移到队尾）
         var synonymInput = null;
         var synonymsContainer = null;
         var editSynonymInput = null;
@@ -1866,6 +1867,7 @@
             markedThisSession = {}; // 重置本次已标记记录
             forgetCounts = {};      // 重置「忘记了」次数
             forgetClicks = 0;
+            pendingForgetId = null; // 重置「已忘记待离开」状态
 
             // ⚠️ 不再在这里批量标记，改为逐个标记（见 markWordReviewed）
 
@@ -1988,7 +1990,10 @@
                 display.classList.add('show');
                 hint.textContent = '点击屏幕或按空格键隐藏释义';
                 // 显示释义 = 认真看了这个词 → 标记为已复习
-                if (studyWords[studyIndex]) markWordReviewed(studyWords[studyIndex]);
+                // 例外：已点「忘记了」的词不标记（否则会覆盖 next_review=今天 的锁定）
+                if (studyWords[studyIndex] && studyWords[studyIndex].id !== pendingForgetId) {
+                    markWordReviewed(studyWords[studyIndex]);
+                }
             } else {
                 display.classList.remove('show');
                 display.style.visibility = 'hidden';
@@ -2034,22 +2039,41 @@
 
         function prevWord() {
             if (studyIndex > 0) {
-                // 离开当前词 → 标记已复习
-                if (studyWords[studyIndex]) markWordReviewed(studyWords[studyIndex]);
+                // 离开当前词（「忘记了」的词→移到队尾不标记；正常词→标记已复习）
+                leaveCurrentWord();
                 studyIndex--;
                 renderStudyWord();
             }
         }
 
         function nextWord() {
+            if (studyWords.length === 0) return;
+            var word = studyWords[studyIndex];
+
+            // 当前词是「忘记了」的词：不算通过，移到队尾稍后重来
+            if (pendingForgetId === word.id) {
+                if (studyIndex === studyWords.length - 1 || studyWords.length === 1) {
+                    // 已是队尾（或唯一词）→ 原地循环，再看它一遍
+                    pendingForgetId = null;
+                    renderStudyWord();
+                } else {
+                    // 移到队尾，索引不变→自然指向下一个词
+                    studyWords.splice(studyIndex, 1);
+                    studyWords.push(word);
+                    pendingForgetId = null;
+                    renderStudyWord();
+                }
+                return;
+            }
+
             if (studyIndex < studyWords.length - 1) {
                 // 离开当前词 → 标记已复习
-                if (studyWords[studyIndex]) markWordReviewed(studyWords[studyIndex]);
+                markWordReviewed(word);
                 studyIndex++;
                 renderStudyWord();
             } else {
                 // 最后一个词也按了「下一个」→ 视为认识，标记并进入完成页
-                if (studyWords[studyIndex]) markWordReviewed(studyWords[studyIndex]);
+                markWordReviewed(word);
                 showCompletePage();
             }
         }
@@ -2078,7 +2102,7 @@
             document.getElementById('page-complete').classList.add('active');
         }
 
-        // ====== 「忘记了」：移到队尾稍后重来（最多重复3次）======
+        // ====== 「忘记了」：原地显示释义 + 一闪而过提示，离开该词时才移到队尾（最多重复3次）======
         function forgetWord() {
             if (studyWords.length === 0) return;
             var word = studyWords[studyIndex];
@@ -2088,10 +2112,7 @@
             if (cnt >= 3) return; // 已达3次上限，按钮已禁用
             forgetCounts[word.id] = cnt + 1;
             forgetClicks++;
-
-            // 移到队尾（索引不变：非末尾词→自然指向下个；末尾词→原地循环再出现）
-            studyWords.splice(studyIndex, 1);
-            studyWords.push(word);
+            pendingForgetId = word.id; // 离开该词时再移到队尾
 
             // 数据层：锁定 next_review=今天 → 明天智能复习必出（不标记已复习、间隔不延长）
             var today = new Date().toISOString().split('T')[0];
@@ -2101,9 +2122,41 @@
             }
             updateWordInDB(word.id, { nextReview: today }).catch(function() {});
 
-            // 直接执行，无任何提示
-            meaningVisible = false;
-            renderStudyWord();
+            // 原地直接显示该词释义（不走 toggleMeaning，避免被误标记为已复习）
+            meaningVisible = true;
+            var md = document.getElementById('meaning-display');
+            md.style.visibility = 'visible';
+            md.style.height = 'auto';
+            md.classList.add('show');
+            document.getElementById('hint-text').textContent = '点击屏幕或按空格键隐藏释义';
+
+            // 一闪而过的提示弹窗
+            showToast('该单词忘记了~已重新规划复习计划');
+
+            // 刷新 🔁 计数与按钮状态（第3次点击后立刻变灰）
+            var fc = document.getElementById('forget-count');
+            if (fc && forgetClicks > 0) {
+                fc.style.display = 'inline';
+                fc.textContent = '🔁 ' + forgetClicks;
+            }
+            var canForget = forgetCounts[word.id] < 3;
+            var fbD = document.getElementById('forget-btn-desktop');
+            var fbM = document.getElementById('forget-btn-mobile');
+            if (fbD) fbD.classList.toggle('disabled', !canForget);
+            if (fbM) fbM.classList.toggle('disabled', !canForget);
+        }
+
+        // 离开当前词的统一处理：正常词→标记已复习；「忘记了」的词→移到队尾且不标记
+        function leaveCurrentWord() {
+            var word = studyWords[studyIndex];
+            if (!word) return;
+            if (pendingForgetId === word.id) {
+                studyWords.splice(studyIndex, 1);
+                studyWords.push(word);
+                pendingForgetId = null;
+            } else {
+                markWordReviewed(word);
+            }
         }
 
         function exitReview() {
