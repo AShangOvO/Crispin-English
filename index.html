@@ -333,9 +333,18 @@
             min-height: 200px; display: flex; flex-direction: column; justify-content: center;
             cursor: pointer;
         }
-        .main-word {
-            font-size: 48px; font-weight: 700; color: var(--primary); margin-bottom: 16px;
+        .word-line {
+            display: flex; align-items: center; justify-content: center;
+            gap: 14px; margin-bottom: 16px;
         }
+        .main-word {
+            font-size: 48px; font-weight: 700; color: var(--primary);
+        }
+        /* 单词旁小喇叭（仅手机端显示，电脑端用导航栏🔊） */
+        .word-speaker { display: none; }
+
+        /* 手机端滑动提示 + 忘记了按钮（仅手机端显示） */
+        .mobile-swipe-hint, .mobile-forget-btn { display: none; }
         .meaning-display {
             font-size: 20px; color: var(--text); line-height: 1.6;
             visibility: hidden; height: 0; overflow: hidden;
@@ -429,36 +438,6 @@
             font-family: monospace; font-size: 12px;
         }
 
-        /* ====== 手机端底部操作栏 ====== */
-        .mobile-controls {
-            display: none; flex-direction: column; gap: 10px;
-            padding: 12px 16px 16px; background: white;
-            border-top: 1px solid var(--border);
-            position: fixed; bottom: 0; left: 0; right: 0;
-            box-shadow: 0 -2px 10px rgba(0,0,0,0.08); z-index: 50;
-        }
-        .mobile-nav { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
-        .mobile-nav .mobile-btn { flex: 1; padding: 10px 2px; font-size: 12px; }
-        .mobile-btn {
-            background: var(--bg); border: 1px solid var(--border);
-            border-radius: 10px; padding: 10px 16px; font-size: 13px;
-            text-align: center; cursor: pointer; transition: all 0.15s;
-            user-select: none; -webkit-user-select: none;
-        }
-        #forget-btn-mobile { border-color: var(--danger); color: var(--danger); }
-        #forget-btn-mobile.disabled { opacity: 0.35; cursor: not-allowed; }
-        .mobile-btn:active {
-            background: #e0e0e0; transform: scale(0.95);
-        }
-        .mobile-btn .btn-icon { font-size: 22px; display: block; margin-bottom: 2px; }
-        .mobile-features {
-            display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
-        }
-        .mobile-features .mobile-btn {
-            padding: 8px 4px; font-size: 11px;
-        }
-        .mobile-features .btn-icon { font-size: 18px; margin-bottom: 0; }
-
         /* ====== 统计 ====== */
         .stats-grid {
             display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -514,15 +493,52 @@
                 flex-direction: column; height: auto; padding: 10px 0; gap: 8px;
             }
             .container { padding: 12px; }
-            .side-info { grid-template-columns: 1fr; }
             .main-word { font-size: 36px; }
             .word-display { padding: 32px 20px; }
             .card { padding: 16px; }
             .keyboard-hints { display: none !important; }
             .review-nav { display: none; }
-            .review-container { padding-bottom: 180px; }
-            .mobile-controls { display: flex; }
+            .review-container { padding-bottom: 24px; }
             .user-email { display: none; }
+
+            /* 单词旁小喇叭（手机端触控发音） */
+            .word-speaker {
+                display: inline-flex; align-items: center; justify-content: center;
+                width: 44px; height: 44px; border-radius: 50%;
+                background: #EEF4FF; border: none; font-size: 22px;
+                flex-shrink: 0; cursor: pointer; transition: all 0.15s;
+            }
+            .word-speaker:active { background: #D6E4FF; transform: scale(0.9); }
+
+            /* 滑动提示 + 忘记了按钮（手机端纯触控操作） */
+            .mobile-swipe-hint {
+                display: block; text-align: center;
+                font-size: 13px; color: #999; margin-top: 20px;
+                user-select: none; -webkit-user-select: none;
+            }
+            .mobile-forget-btn {
+                display: block; width: 100%; margin-top: 14px;
+                padding: 15px; background: var(--danger); color: white;
+                border: none; border-radius: 12px;
+                font-size: 15px; font-weight: 600; cursor: pointer;
+                transition: all 0.15s;
+            }
+            .mobile-forget-btn:active { transform: scale(0.98); }
+            .mobile-forget-btn.disabled {
+                opacity: 0.35; cursor: not-allowed;
+            }
+
+            /* 信息框合并为一张卡片（方案三）：细分隔线，点击行展开 */
+            .side-info {
+                grid-template-columns: 1fr; gap: 0;
+                background: var(--card); border-radius: 12px;
+                box-shadow: var(--shadow); overflow: hidden;
+                margin-bottom: 16px;
+            }
+            .side-info .info-box {
+                box-shadow: none; border-radius: 0;
+                padding: 14px 16px;
+            }
 
             /* 搜索框手机适配 */
             #search-input { width: 130px; font-size: 14px; padding: 8px 12px; }
@@ -533,7 +549,6 @@
             /* 手机端按钮触摸优化 */
             .btn { min-height: 44px; }
             .btn-sm { min-height: 36px; padding: 8px 14px; }
-            .mobile-btn { min-height: 48px; }
             .nav-btn { padding: 10px 16px; }
             .auth-submit { min-height: 48px; }
             .remove-dist, .remove-root { min-width: 36px; min-height: 36px; }
@@ -556,7 +571,7 @@
         }
         @media (max-width: 400px) {
             .main-word { font-size: 28px; }
-            .meaning-display { font-size: 17px; }`
+            .meaning-display { font-size: 17px; }
         }
     </style>
 </head>
@@ -720,7 +735,10 @@
                     </div>
 
                     <div class="word-display" id="word-display" onclick="toggleMeaning()">
-                        <div class="main-word" id="main-word">...</div>
+                        <div class="word-line">
+                            <span class="main-word" id="main-word">...</span>
+                            <button type="button" class="word-speaker" onclick="event.stopPropagation();speakWord()" title="发音">🔊</button>
+                        </div>
                         <div class="meaning-display" id="meaning-display">...</div>
                         <div class="hint-text" id="hint-text">点击屏幕或按空格键显示释义</div>
                     </div>
@@ -763,22 +781,10 @@
                         <div class="key-hint"><span class="key">D</span> 易混词</div>
                         <div class="key-hint"><span class="key">F</span> 同词根</div>
                     </div>
-                </div>
 
-                <!-- 手机端底部操作栏 -->
-                <div class="mobile-controls" id="mobile-controls">
-                    <div class="mobile-nav">
-                        <div class="mobile-btn" onclick="prevWord()"><span class="btn-icon">◀</span>上一个</div>
-                        <div class="mobile-btn" onclick="speakWord()"><span class="btn-icon">🔊</span>发音</div>
-                        <div class="mobile-btn" id="forget-btn-mobile" onclick="forgetWord()"><span class="btn-icon">❌</span>忘记了</div>
-                        <div class="mobile-btn" onclick="nextWord()"><span class="btn-icon">▶</span>下一个</div>
-                    </div>
-                    <div class="mobile-features">
-                        <div class="mobile-btn" onclick="toggleMeaning()"><span class="btn-icon">👁️</span>释义</div>
-                        <div class="mobile-btn" onclick="toggleSynonyms()"><span class="btn-icon">📝</span>同义词</div>
-                        <div class="mobile-btn" onclick="showAllDistMeanings()"><span class="btn-icon">⚠️</span>易混词</div>
-                        <div class="mobile-btn" onclick="showAllRootMeanings()"><span class="btn-icon">🌱</span>同词根</div>
-                    </div>
+                    <!-- 手机端：滑动提示 + 忘记了（纯触控操作） -->
+                    <div class="mobile-swipe-hint">👆 左右滑动切换单词</div>
+                    <button type="button" class="mobile-forget-btn" id="forget-btn-mobile" onclick="forgetWord()">❌ 忘记了</button>
                 </div>
             </div>
 
@@ -1953,6 +1959,17 @@
                 rootBox.style.display = 'none';
             }
 
+            // 信息框：手机端合并为一张卡片（方案三）
+            // ① 三类全无时隐藏整个容器，避免出现空白卡片
+            var sideInfoEl = document.querySelector('.side-info');
+            var visibleBoxes = [synonymBox, distBox, rootBox].filter(function(b) { return b.style.display !== 'none'; });
+            if (sideInfoEl) sideInfoEl.style.display = visibleBoxes.length ? '' : 'none';
+            // ② 手机端为可见行动态添加细分隔线（第一行不加）
+            var isMobileLayout = window.matchMedia && window.matchMedia('(max-width: 768px)').matches;
+            visibleBoxes.forEach(function(b, i) {
+                b.style.borderTop = (isMobileLayout && i > 0) ? '1px solid #eeeeee' : '';
+            });
+
             // 自动发音（手机端浏览器可能禁止自动播放，点🔊按钮即可）
             if (speechSynth || true) {
                 setTimeout(function() {
@@ -2136,12 +2153,8 @@
             const diffY = touchStartY - touchEndY;
             const duration = Date.now() - touchStartTime;
 
-            // 水平滑动检测（排除在按钮上点击的情况）
+            // 水平滑动检测（任意位置滑动即可切换单词）
             if (Math.abs(diffX) > 50 && Math.abs(diffX) > Math.abs(diffY) * 2 && duration < 500) {
-                // 检查是否点在底部操作栏上
-                const target = e.target;
-                if (target.closest('.mobile-controls')) return;
-
                 if (diffX > 0) {
                     nextWord();
                 } else {
