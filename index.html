@@ -770,8 +770,8 @@
                     <div class="mobile-nav">
                         <div class="mobile-btn" onclick="prevWord()"><span class="btn-icon">◀</span>上一个</div>
                         <div class="mobile-btn" onclick="speakWord()"><span class="btn-icon">🔊</span>发音</div>
-                        <div class="mobile-btn" onclick="nextWord()"><span class="btn-icon">▶</span>下一个</div>
                         <div class="mobile-btn" id="forget-btn-mobile" onclick="forgetWord()"><span class="btn-icon">❌</span>忘记了</div>
+                        <div class="mobile-btn" onclick="nextWord()"><span class="btn-icon">▶</span>下一个</div>
                     </div>
                     <div class="mobile-features">
                         <div class="mobile-btn" onclick="toggleMeaning()"><span class="btn-icon">👁️</span>释义</div>
@@ -779,6 +779,29 @@
                         <div class="mobile-btn" onclick="showAllDistMeanings()"><span class="btn-icon">⚠️</span>易混词</div>
                         <div class="mobile-btn" onclick="showAllRootMeanings()"><span class="btn-icon">🌱</span>同词根</div>
                     </div>
+                </div>
+            </div>
+
+            <!-- 复习完成页 -->
+            <div id="page-complete" class="page">
+                <div class="review-container" style="text-align:center;padding-top:32px">
+                    <div style="font-size:72px">🎉</div>
+                    <h2 style="margin:12px 0 32px;font-size:26px">复习完成！</h2>
+                    <div class="stats-grid" style="max-width:560px;margin:0 auto">
+                        <div class="stat-card">
+                            <div class="stat-number" id="complete-today" style="color:var(--primary)">0</div>
+                            <div class="stat-label">📝 今日已复习</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-number" id="complete-forgot" style="color:var(--danger)">0</div>
+                            <div class="stat-label">🔁 忘记了</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-number" id="complete-tomorrow" style="color:var(--success)">0</div>
+                            <div class="stat-label">📅 明天待复习</div>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary btn-lg" onclick="exitReview()" style="margin-top:36px">返回复习选择</button>
                 </div>
             </div>
         </div>
@@ -2008,8 +2031,34 @@
                 studyIndex++;
                 renderStudyWord();
             } else {
-                showToast('已经是最后一个单词了！');
+                // 最后一个词也按了「下一个」→ 视为认识，标记并进入完成页
+                if (studyWords[studyIndex]) markWordReviewed(studyWords[studyIndex]);
+                showCompletePage();
             }
+        }
+
+        // ====== 复习完成页：今日复习数 / 忘记数 / 明天待复习数 ======
+        function showCompletePage() {
+            var today = new Date().toISOString().split('T')[0];
+            var t = new Date();
+            t.setDate(t.getDate() + 1);
+            var tomorrowStr = t.toISOString().split('T')[0];
+
+            // 今日已复习（last_review=今天，含今天所有场次）
+            var todayCount = words.filter(function(w) { return w.last_review === today; }).length;
+            // 忘记了几个（本次复习中至少忘记过一次的去重单词数）
+            var forgotCount = Object.keys(forgetCounts).length;
+            // 明天待复习（next_review <= 明天，含逾期未复习的）
+            var dueTomorrow = words.filter(function(w) {
+                return w.next_review && w.next_review <= tomorrowStr;
+            }).length;
+
+            document.getElementById('complete-today').textContent = todayCount;
+            document.getElementById('complete-forgot').textContent = forgotCount;
+            document.getElementById('complete-tomorrow').textContent = dueTomorrow;
+
+            document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
+            document.getElementById('page-complete').classList.add('active');
         }
 
         // ====== 「忘记了」：移到队尾稍后重来（最多重复3次）======
