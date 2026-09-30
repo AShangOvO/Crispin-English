@@ -2328,13 +2328,15 @@
         });
 
         // ==================== 触摸手势：左右滑动切换单词 ====================
-        // 修复：①去掉500ms时长限制（慢滑不再失效）
-        //       ②角度放宽到45°（带弧线的斜滑也能识别）
-        //       ③跟踪手指id，手掌误触/双指不再产生乱坐标
-        //       ④起点状态显式管理，杜绝跨页面旧值残留
+        // v3 设计：位移 + 速度双门槛，防误触且不误伤正常滑动
+        //   路径A 大位移：|水平位移| ≥ 80px（45°内）→ 意图明确，慢滑稳滑都能触发
+        //   路径B 快滑：  |水平位移| ≥ 55px 且 速度 ≥ 0.35px/ms（350px/s）且 34°内 → 果断轻扫
+        //   误触特征（点按蠕动/轻碰，位移小且慢）→ 两路都不满足 → 不切换
+        //   其余保护：跟踪手指id防多指乱坐标、起点状态显式管理防旧值残留、touchcancel清理
         var swipeTouchId = null;   // 本次手势跟踪的手指（null=无有效手势）
         var swipeStartX = 0;
         var swipeStartY = 0;
+        var swipeStartTime = 0;    // 起始时间（算速度用，区分慢速误触和有意滑动）
 
         document.addEventListener('touchstart', function(e) {
             if (!document.getElementById('page-study').classList.contains('active')) {
@@ -2346,6 +2348,7 @@
             swipeTouchId = t.identifier;
             swipeStartX = t.screenX;
             swipeStartY = t.screenY;
+            swipeStartTime = Date.now();
         }, { passive: true });
 
         document.addEventListener('touchend', function(e) {
@@ -2367,9 +2370,22 @@
 
             var diffX = swipeStartX - endTouch.screenX;
             var diffY = swipeStartY - endTouch.screenY;
+            var distance = Math.abs(diffX);
 
-            // 水平位移 >50px 且水平分量为主（45°内）→ 切换单词（不限制滑动速度）
-            if (Math.abs(diffX) > 50 && Math.abs(diffX) >= Math.abs(diffY)) {
+            // 必须水平为主（45°内）→ 纯竖向滑动不切词
+            if (distance < Math.abs(diffY)) return;
+
+            // 滑动速度（px/ms），下限1ms防除零
+            var duration = Math.max(Date.now() - swipeStartTime, 1);
+            var speed = distance / duration;
+
+            // 路径A：位移≥80px → 意图明确（慢滑、稳滑都能触发）
+            var isLongSwipe = distance >= 80;
+            // 路径B：位移≥55px 且速度≥0.35px/ms 且更水平(约34°内) → 果断快滑
+            var isFastSwipe = distance >= 55 && speed >= 0.35 &&
+                distance > Math.abs(diffY) * 1.5;
+
+            if (isLongSwipe || isFastSwipe) {
                 if (diffX > 0) {
                     nextWord();
                 } else {
