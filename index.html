@@ -345,15 +345,49 @@
 
         /* 手机端滑动提示 + 忘记了按钮（仅手机端显示） */
         .mobile-swipe-hint, .mobile-forget-btn { display: none; }
+        /* ====== 复习展示：多行释义 + 词性标签（grid 两列对齐）====== */
         .meaning-display {
             font-size: 20px; color: var(--text); line-height: 1.6;
             visibility: hidden; height: 0; overflow: hidden;
+            display: grid; grid-template-columns: auto 1fr;
+            gap: 6px 12px; justify-content: center; text-align: left;
         }
         .meaning-display.show {
             visibility: visible; height: auto; overflow: visible;
             margin-top: 16px;
         }
+        .pos-tag {
+            justify-self: end; align-self: start;
+            display: inline-block; padding: 1px 9px; border-radius: 12px;
+            font-size: 14px; font-weight: 600; color: white;
+            white-space: nowrap; line-height: 1.5;
+        }
+        .pos-blue { background: var(--primary); }
+        .pos-green { background: var(--success); }
+        .pos-orange { background: var(--warning); }
+        .pos-purple { background: var(--secondary); }
+        .meaning-text { min-width: 120px; }
+        .meaning-empty-cell { min-width: 0; }
         .hint-text { font-size: 14px; color: #999; margin-top: 16px; }
+
+        /* ====== 释义动态行编辑（导入页 + 编辑弹窗共用）====== */
+        .meaning-lines { display: flex; flex-direction: column; gap: 8px; }
+        .meaning-line { display: flex; gap: 8px; align-items: center; }
+        .meaning-line-input {
+            flex: 1; min-width: 0;
+            padding: 10px 14px; border: 1px solid var(--border);
+            border-radius: 8px; font-size: 14px; outline: none;
+            transition: border-color 0.3s;
+        }
+        .meaning-line-input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(74,144,226,0.1);
+        }
+        .remove-meaning {
+            background: none; border: none; color: var(--danger);
+            font-size: 22px; cursor: pointer; padding: 4px 8px;
+            flex-shrink: 0; line-height: 1;
+        }
 
         /* ====== 侧边信息 ====== */
         .side-info {
@@ -552,6 +586,9 @@
             .nav-btn { padding: 10px 16px; }
             .auth-submit { min-height: 48px; }
             .remove-dist, .remove-root { min-width: 36px; min-height: 36px; }
+            /* 释义动态行手机适配 */
+            .meaning-line-input { font-size: 16px; padding: 11px 12px; } /* 16px 防 iOS 缩放 */
+            .remove-meaning { min-width: 40px; min-height: 40px; font-size: 26px; }
 
             /* 编辑模态框手机端适配 */
             .modal {
@@ -641,8 +678,14 @@
                         <input type="text" id="word-input" class="form-input" placeholder="输入英文单词" autocomplete="off">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">释义 *</label>
-                        <textarea id="meaning-input" class="form-textarea" placeholder="输入单词的中文意思，可以多行输入"></textarea>
+                        <label class="form-label">释义 * <span style="font-weight:normal;color:#999">（一行一个意思，词性自己写，如 v. 放弃）</span></label>
+                        <div class="meaning-lines" id="meaning-lines">
+                            <div class="meaning-line">
+                                <input type="text" class="meaning-line-input" placeholder="如：v. 放弃，抛弃">
+                                <button type="button" class="remove-meaning" onclick="this.parentElement.remove()">×</button>
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="addMeaningLine('meaning-lines')" style="margin-top:8px">＋ 添加意思</button>
                     </div>
                     <div class="form-group">
                         <label class="form-label">同义词 <span style="font-weight:normal;color:#999">(按回车添加)</span></label>
@@ -822,8 +865,14 @@
                 <input type="text" id="edit-word" class="form-input">
             </div>
             <div class="form-group">
-                <label class="form-label">释义</label>
-                <textarea id="edit-meaning" class="form-textarea"></textarea>
+                <label class="form-label">释义 <span style="font-weight:normal;color:#999">（一行一个意思）</span></label>
+                <div class="meaning-lines" id="edit-meaning-lines">
+                    <div class="meaning-line">
+                        <input type="text" class="meaning-line-input" placeholder="如：v. 放弃，抛弃">
+                        <button type="button" class="remove-meaning" onclick="this.parentElement.remove()">×</button>
+                    </div>
+                </div>
+                <button type="button" class="btn btn-outline btn-sm" onclick="addMeaningLine('edit-meaning-lines')" style="margin-top:8px">＋ 添加意思</button>
             </div>
             <div class="form-group">
                 <label class="form-label">同义词 <span style="font-weight:normal;color:#999">(按回车添加)</span></label>
@@ -1462,10 +1511,101 @@
             list.appendChild(item);
         }
 
+        // ====== 释义动态行（导入页 + 编辑弹窗共用）======
+        // 添加一行（containerId=容器id, value=可选初始值）
+        function addMeaningLine(containerId, value) {
+            var container = document.getElementById(containerId);
+            if (!container) return;
+            var line = document.createElement('div');
+            line.className = 'meaning-line';
+            line.innerHTML = '<input type="text" class="meaning-line-input" placeholder="如：v. 放弃，抛弃">' +
+                '<button type="button" class="remove-meaning" onclick="this.parentElement.remove()">×</button>';
+            if (value) line.querySelector('input').value = value;
+            container.appendChild(line);
+        }
+
+        // 读取所有行 → 数组（跳过空行）
+        function getMeaningLines(containerId) {
+            var inputs = document.querySelectorAll('#' + containerId + ' .meaning-line-input');
+            var lines = [];
+            inputs.forEach(function(inp) {
+                var v = inp.value.trim();
+                if (v) lines.push(v);
+            });
+            return lines;
+        }
+
+        // 用 meaning 文本填充容器（按 \n 拆行；旧单词无换行→整段放第一个框，不智能拆分）
+        function setMeaningLines(containerId, meaningText) {
+            var container = document.getElementById(containerId);
+            if (!container) return;
+            container.innerHTML = '';
+            var lines = String(meaningText || '').split('\n').filter(function(l) { return l.trim() !== ''; });
+            if (lines.length === 0) {
+                addMeaningLine(containerId); // 至少给一个空行
+                return;
+            }
+            lines.forEach(function(l) { addMeaningLine(containerId, l.trim()); });
+        }
+
+        // ====== 复习展示：多行释义 + 行首词性彩色标签 ======
+        function renderMeaningLines(meaning) {
+            if (!meaning) return '';
+            var lines = String(meaning).split('\n');
+            var html = '';
+            lines.forEach(function(line) {
+                line = line.trim();
+                if (!line) return;
+                html += renderPOSLine(line);
+            });
+            return html;
+        }
+
+        // 单行渲染：行首词性/类别 → 彩色标签；其余普通文字（grid 两列保持词性列对齐）
+        function renderPOSLine(line) {
+            // 中文类别：搭配/短语/词组/例句/辨析/记忆/用法/同义/反义
+            var catMatch = line.match(/^(搭配|短语|词组|例句|辨析|记忆|用法|同义|反义)\s*[:：]?[ 　]*/);
+            if (catMatch) {
+                var cat = catMatch[1];
+                var catColor = { '搭配': 'pos-green', '短语': 'pos-green', '词组': 'pos-green', '用法': 'pos-green',
+                    '例句': 'pos-orange', '辨析': 'pos-purple', '记忆': 'pos-purple',
+                    '同义': 'pos-blue', '反义': 'pos-blue' };
+                return '<span class="pos-tag ' + (catColor[cat] || 'pos-green') + '">' + escapeHtml(cat) + '</span>' +
+                    '<span class="meaning-text">' + escapeHtml(line.substring(catMatch[0].length)) + '</span>';
+            }
+            // 英文词性（必须带点才高亮，避免误伤普通英文）：v. n. vt. vi. adj. adv. prep. conj. pron. num. art. int. abbr. pl. aux.
+            var posMatch = line.match(/^(vt\.|vi\.|n\.|v\.|adj\.|adv\.|prep\.|conj\.|pron\.|num\.|art\.|int\.|abbr\.|pl\.|aux\.)[ 　]+/i);
+            if (posMatch) {
+                return '<span class="pos-tag pos-blue">' + escapeHtml(posMatch[1]) + '</span>' +
+                    '<span class="meaning-text">' + escapeHtml(line.substring(posMatch[0].length)) + '</span>';
+            }
+            // 无词性行：第一格留空保持列对齐
+            return '<span class="meaning-empty-cell"></span>' +
+                '<span class="meaning-text">' + escapeHtml(line) + '</span>';
+        }
+
+        // 释义框按回车自动添加下一行（事件委托，动态行通用；导入页+编辑弹窗都生效）
+        ['meaning-lines', 'edit-meaning-lines'].forEach(function(cid) {
+            var container = document.getElementById(cid);
+            if (!container) return;
+            container.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    var line = e.target.closest ? e.target.closest('.meaning-line') : null;
+                    if (line && line.parentElement === container) {
+                        addMeaningLine(cid);
+                        var inputs = container.querySelectorAll('.meaning-line-input');
+                        inputs[inputs.length - 1].focus();
+                    }
+                }
+            });
+        });
+
         async function saveWord() {
             const date = document.getElementById('import-date').value;
             const word = document.getElementById('word-input').value.trim();
-            const meaning = document.getElementById('meaning-input').value.trim();
+            const meaningLines = getMeaningLines('meaning-lines');
+            const meaning = meaningLines.join('\n');
 
             if (!date) { showToast('请选择日期'); return; }
             if (!word) { showToast('请输入单词'); return; }
@@ -1516,7 +1656,7 @@
 
         function clearForm() {
             document.getElementById('word-input').value = '';
-            document.getElementById('meaning-input').value = '';
+            setMeaningLines('meaning-lines', ''); // 重置为一个空行
             document.getElementById('synonym-input').value = '';
             synonyms = [];
             renderSynonymTags();
@@ -1543,7 +1683,7 @@
                 <div class="word-item">
                     <div class="word-info">
                         <div class="word-text">${w.word}</div>
-                        <div class="word-meaning">${w.meaning}</div>
+                        <div class="word-meaning">${escapeHtml(String(w.meaning || '').replace(/\n/g, ' · '))}</div>
                         <div class="word-meta">
                             📅 ${w.date}
                             ${w.synonyms && w.synonyms.length ? ' · 📝 同义词 ' + w.synonyms.length + '个' : ''}
@@ -1619,7 +1759,7 @@
                 currentEditId = id;
 
                 document.getElementById('edit-word').value = w.word || '';
-                document.getElementById('edit-meaning').value = w.meaning || '';
+                setMeaningLines('edit-meaning-lines', w.meaning || ''); // 按行填充；旧单词整段放第一框
 
                 editSynonyms = [...(w.synonyms || [])];
                 renderEditSynonymTags();
@@ -1660,7 +1800,7 @@
             if (!w) return;
 
             const newWord = document.getElementById('edit-word').value.trim();
-            const newMeaning = document.getElementById('edit-meaning').value.trim();
+            const newMeaning = getMeaningLines('edit-meaning-lines').join('\n');
             if (!newWord || !newMeaning) { showToast('单词和释义不能为空'); return; }
 
             const distItems = document.querySelectorAll('#edit-distinguish-list .distinguish-item');
@@ -1888,7 +2028,7 @@
             meaningDisplay.style.height = '0';
 
             document.getElementById('main-word').textContent = word.word;
-            meaningDisplay.textContent = word.meaning;
+            meaningDisplay.innerHTML = renderMeaningLines(word.meaning); // 多行释义 + 词性彩色标签
             document.getElementById('hint-text').textContent = '点击屏幕或按空格键显示释义';
             meaningVisible = false;
 
