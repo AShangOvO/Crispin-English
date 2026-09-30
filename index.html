@@ -678,10 +678,10 @@
                         <input type="text" id="word-input" class="form-input" placeholder="输入英文单词" autocomplete="off">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">释义 * <span style="font-weight:normal;color:#999">（一行一个意思，词性自己写，如 v. 放弃）</span></label>
+                        <label class="form-label">释义 *</label>
                         <div class="meaning-lines" id="meaning-lines">
                             <div class="meaning-line">
-                                <input type="text" class="meaning-line-input" placeholder="如：v. 放弃，抛弃">
+                                <input type="text" class="meaning-line-input" placeholder="请输入释义">
                                 <button type="button" class="remove-meaning" onclick="this.parentElement.remove()">×</button>
                             </div>
                         </div>
@@ -865,10 +865,10 @@
                 <input type="text" id="edit-word" class="form-input">
             </div>
             <div class="form-group">
-                <label class="form-label">释义 <span style="font-weight:normal;color:#999">（一行一个意思）</span></label>
+                <label class="form-label">释义</label>
                 <div class="meaning-lines" id="edit-meaning-lines">
                     <div class="meaning-line">
-                        <input type="text" class="meaning-line-input" placeholder="如：v. 放弃，抛弃">
+                        <input type="text" class="meaning-line-input" placeholder="请输入释义">
                         <button type="button" class="remove-meaning" onclick="this.parentElement.remove()">×</button>
                     </div>
                 </div>
@@ -1518,7 +1518,7 @@
             if (!container) return;
             var line = document.createElement('div');
             line.className = 'meaning-line';
-            line.innerHTML = '<input type="text" class="meaning-line-input" placeholder="如：v. 放弃，抛弃">' +
+            line.innerHTML = '<input type="text" class="meaning-line-input" placeholder="请输入释义">' +
                 '<button type="button" class="remove-meaning" onclick="this.parentElement.remove()">×</button>';
             if (value) line.querySelector('input').value = value;
             container.appendChild(line);
