@@ -345,12 +345,13 @@
 
         /* 手机端滑动提示 + 忘记了按钮（仅手机端显示） */
         .mobile-swipe-hint, .mobile-forget-btn { display: none; }
-        /* ====== 复习展示：多行释义 + 词性标签（grid 两列对齐）====== */
+        /* ====== 复习展示：多行释义 + 词性标签（grid 两列对齐，整体居中）====== */
         .meaning-display {
             font-size: 20px; color: var(--text); line-height: 1.6;
             visibility: hidden; height: 0; overflow: hidden;
-            display: grid; grid-template-columns: auto 1fr;
-            gap: 6px 12px; justify-content: center; text-align: left;
+            display: grid; grid-template-columns: auto max-content;
+            gap: 6px 12px; width: fit-content; max-width: 100%;
+            align-self: center; text-align: left;
         }
         .meaning-display.show {
             visibility: visible; height: auto; overflow: visible;
