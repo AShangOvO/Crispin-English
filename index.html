@@ -367,7 +367,7 @@
         .word-speaker { display: none; }
 
         /* 手机端滑动提示 + 忘记了按钮（仅手机端显示） */
-        .mobile-swipe-hint, .mobile-forget-btn { display: none; }
+        .mobile-forget-btn { display: none; }
         /* ====== 复习展示：多行释义 + 词性标签（grid 两列对齐，整体居中）====== */
         .meaning-display {
             font-size: 20px; color: var(--text); line-height: 1.6;
@@ -568,12 +568,7 @@
             }
             .word-speaker:active { background: #D6E4FF; transform: scale(0.9); }
 
-            /* 滑动提示 + 忘记了按钮（手机端纯触控操作） */
-            .mobile-swipe-hint {
-                display: block; text-align: center;
-                font-size: 13px; color: #999; margin-top: 20px;
-                user-select: none; -webkit-user-select: none;
-            }
+            /* 忘记了按钮（手机端纯触控操作） */
             .mobile-forget-btn {
                 display: block; width: 100%; margin-top: 14px;
                 padding: 15px; background: var(--danger); color: white;
@@ -866,7 +861,6 @@
                     </div>
 
                     <!-- 手机端：滑动提示 + 忘记了（纯触控操作） -->
-                    <div class="mobile-swipe-hint">👆 左右滑动切换单词</div>
                     <button type="button" class="mobile-forget-btn" id="forget-btn-mobile" onclick="forgetWord()">❌ 忘记了</button>
                 </div>
             </div>
