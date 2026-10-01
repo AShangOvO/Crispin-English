@@ -1277,6 +1277,52 @@
             document.getElementById('loading').classList.toggle('show', show);
         }
 
+        // ====== 单词重复校验（导入 / 保存 / 编辑共用）======
+        // 比较键：去首尾空格 + 转小写（英文单词不区分大小写）
+        function wordKey(s) {
+            return String(s == null ? '' : s).trim().toLowerCase();
+        }
+
+        // 查重复：excludeId 传入“自身id”（编辑场景排除自己）
+        // 返回 null=不重复；否则返回已存在的那条单词对象
+        function findDuplicateWord(rawWord, excludeId) {
+            var key = wordKey(rawWord);
+            if (!key) return null;
+            for (var i = 0; i < words.length; i++) {
+                if (excludeId && words[i].id === excludeId) continue;
+                if (wordKey(words[i].word) === key) return words[i];
+            }
+            return null;
+        }
+
+        // 查云端重复（防止本地缓存过期：手机刚存过、电脑还没刷新的情况）
+        // 返回 null=云端不重复/查询失败；否则返回云端那条记录
+        async function findDuplicateWordInCloud(rawWord, excludeId) {
+            if (!supabaseClient || !currentUser) return null;
+            var key = wordKey(rawWord);
+            if (!key) return null;
+            try {
+                const { data, error } = await supabaseClient
+                    .from('words')
+                    .select('id, word, date')
+                    .ilike('word', key)
+                    .limit(5);
+                if (error || !data) return null;
+                for (const row of data) {
+                    if (excludeId && row.id === excludeId) continue;
+                    if (wordKey(row.word) === key) return row;
+                }
+                return null;
+            } catch (e) {
+                return null; // 云端查询失败不阻断保存
+            }
+        }
+
+        // 重复提示文案（优先显示已导入的日期）
+        function dupMessage(hit) {
+            return '⚠️ 该单词已经导入过了' + (hit && hit.date ? '（日期：' + hit.date + '）' : '') + '，不用重复添加';
+        }
+
         // ==================== 数据操作（Supabase） ====================
         async function loadWords() {
             const { data, error } = await supabaseClient
@@ -1416,18 +1462,35 @@
         async function importWordsArray(wordList) {
             showLoading(true);
             let successCount = 0;
-            let failCount = 0;
+            let dupCount = 0;     // 与已有单词重复，跳过
+            let failCount = 0;    // 其它原因失败
+            const dupNames = [];  // 被跳过的单词（提示用，最多显示几个）
+
+            // 导入期间用集合维护“已存在+本批已导入”，防止同一文件里两个重复词都插进去
+            const existing = new Set(words.map(w => wordKey(w.word)).filter(Boolean));
 
             for (const w of wordList) {
+                const rawWord = w.word || w.Word || '';
+                const key = wordKey(rawWord);
+                if (!key || !w.meaning && !w.Meaning) { failCount++; continue; }
+
+                // 本地查重：库里的 + 本批前面刚导入的
+                if (existing.has(key)) {
+                    dupCount++;
+                    if (dupNames.length < 5) dupNames.push(rawWord.trim());
+                    continue;
+                }
+
                 try {
                     await addWordToDB({
-                        word: w.word || w.Word || '',
+                        word: rawWord,
                         meaning: w.meaning || w.Meaning || '',
                         synonyms: w.synonyms || [],
                         distinguish: w.distinguish || [],
                         rootWords: w.rootWords || w.root_words || [],
                         date: w.date || new Date().toISOString().split('T')[0]
                     });
+                    existing.add(key); // 本批内也记上，防止同文件内重复
                     successCount++;
                 } catch (e) {
                     failCount++;
@@ -1440,7 +1503,10 @@
             updateStats();
             showLoading(false);
 
-            showToast(`导入完成！成功 ${successCount} 个${failCount ? '，跳过 ' + failCount + ' 个' : ''}`);
+            let msg = `导入完成！成功 ${successCount} 个`;
+            if (dupCount) msg += `，跳过重复 ${dupCount} 个（${dupNames.join('、')}${dupCount > dupNames.length ? ' 等' : ''}）`;
+            if (failCount) msg += `，失败 ${failCount} 个`;
+            showToast(msg);
         }
 
         // ====== 导出数据（备份）======
@@ -1556,7 +1622,31 @@
             list.appendChild(item);
         }
 
-        // ====== 释义动态行（导入页 + 编辑弹窗共用）======
+        // ====== 重复即时提示（导入页 / 编辑弹窗共用）======
+        // 失焦或输入停顿后查一遍；编辑弹窗排除自己
+        function bindDuplicateHint(inputId, excludeIdGetter) {
+            var el = document.getElementById(inputId);
+            if (!el) return;
+            var t = null;
+            function check() {
+                var v = el.value.trim();
+                if (!v) { el.style.borderColor = ''; el.title = ''; return; }
+                var hit = findDuplicateWord(v, excludeIdGetter ? excludeIdGetter() : null);
+                if (hit) {
+                    el.style.borderColor = 'var(--danger)';
+                    el.title = '该单词已经导入过了' + (hit.date ? '（' + hit.date + '）' : '');
+                } else {
+                    el.style.borderColor = '';
+                    el.title = '';
+                }
+            }
+            el.addEventListener('input', function() { clearTimeout(t); t = setTimeout(check, 300); });
+            el.addEventListener('blur', check);
+        }
+        bindDuplicateHint('word-input');
+        bindDuplicateHint('edit-word', function() { return currentEditId; });
+
+        // ==================== 释义动态行（导入页 + 编辑弹窗共用）======
         // 添加一行（containerId=容器id, value=可选初始值）
         function addMeaningLine(containerId, value) {
             var container = document.getElementById(containerId);
@@ -1656,6 +1746,13 @@
             if (!word) { showToast('请输入单词'); return; }
             if (!meaning) { showToast('请输入释义'); return; }
 
+            // ① 本地缓存查重（快，立即反馈）
+            var dupHit = findDuplicateWord(word);
+            if (dupHit) {
+                showToast(dupMessage(dupHit));
+                return;
+            }
+
             const distItems = document.querySelectorAll('#distinguish-list .distinguish-item');
             const distinguish = [];
             distItems.forEach(item => {
@@ -1679,6 +1776,13 @@
             btn.textContent = '保存中...';
 
             try {
+                // ② 云端再查一次（防止本地缓存过期：别处刚存过、本页还没刷新）
+                var cloudDup = await findDuplicateWordInCloud(word);
+                if (cloudDup) {
+                    showToast(dupMessage(cloudDup));
+                    return; // finally 里恢复按钮
+                }
+
                 const newWord = await addWordToDB({
                     word, meaning,
                     synonyms: [...synonyms],
@@ -1693,10 +1797,11 @@
                 showToast('单词保存成功！');
             } catch (err) {
                 showToast('保存失败: ' + err.message);
+            } finally {
+                // 无论成功/重复/异常，按钮都恢复
+                btn.disabled = false;
+                btn.textContent = '💾 保存单词';
             }
-
-            btn.disabled = false;
-            btn.textContent = '💾 保存单词';
         }
 
         function clearForm() {
@@ -1847,6 +1952,14 @@
             const newWord = document.getElementById('edit-word').value.trim();
             const newMeaning = getMeaningLines('edit-meaning-lines').join('\n');
             if (!newWord || !newMeaning) { showToast('单词和释义不能为空'); return; }
+
+            // 查重：排除自己，避免“只改释义没改单词”被误判；
+            // 但若改成的单词库里已存在 → 拦住，否则会造出两条重复
+            var editDup = findDuplicateWord(newWord, currentEditId);
+            if (editDup && wordKey(editDup.word) !== wordKey(w.word)) {
+                showToast(dupMessage(editDup));
+                return;
+            }
 
             const distItems = document.querySelectorAll('#edit-distinguish-list .distinguish-item');
             const distinguish = [];
