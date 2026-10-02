@@ -915,6 +915,20 @@
         </div>
     </div>
 
+    <!-- 继续上次复习 弹窗（C1：中断后询问 断点继续 / 重新开始） -->
+    <div class="modal-overlay" id="resume-modal">
+        <div class="modal">
+            <div class="modal-title">📋 上次复习未完成</div>
+            <div id="resume-desc" style="font-size:16px;font-weight:600;color:var(--text);line-height:1.7;margin-bottom:6px"></div>
+            <div id="resume-extra" style="font-size:13px;color:#999;line-height:1.7;margin-bottom:20px"></div>
+            <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap">
+                <button class="btn btn-outline" onclick="closeResumeDialog()">✕ 关闭</button>
+                <button class="btn btn-outline" onclick="restartFromScratch()">🔄 重新开始</button>
+                <button class="btn btn-primary" onclick="resumeStudySession()">▶ 继续断点</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 编辑模态框 -->
     <div class="modal-overlay" id="edit-modal">
         <div class="modal">
@@ -2072,10 +2086,16 @@
         function startSmartReview() {
             const smartWords = getSmartReviewWords();
             if (smartWords.length === 0) {
+                // 到期列表为空，但若存在未完成的智能复习断点，仍允许进入继续（断点队列自带词表）
+                var saved = loadStudyProgress({ mode: 'smart' });
+                if (saved && rebuildFromProgress(saved).valid) {
+                    startStudy(smartWords, { mode: 'smart' });
+                    return;
+                }
                 showToast('今天没有需要复习的单词，太棒了！');
                 return;
             }
-            startStudy(smartWords);
+            startStudy(smartWords, { mode: 'smart' });
         }
 
         // ====== 按日期复习：日历（支持翻月，可回看任意历史月份）======
@@ -2183,7 +2203,7 @@
         function selectDate(dateStr) {
             const dateWords = words.filter(w => w.date === dateStr);
             if (dateWords.length === 0) { showToast('该日期没有单词'); return; }
-            startStudy(dateWords);
+            startStudy(dateWords, { mode: 'date', dateKey: dateStr });
         }
 
         // ==================== 随机打乱功能 ====================
@@ -2256,7 +2276,182 @@
             }, '⚠️ 复习记录保存失败，请检查网络');
         }
 
-        async function startStudy(wordList) {
+        // ==================== 复习进度存档（C1：中断后可继续）====================
+        // 按「复习来源」分槽位：智能复习 / 每个日期各一槽，互不覆盖（最多保留5个槽）
+        var STUDY_PROGRESS_KEY = 'vocab_study_progress';
+        var STUDY_PROGRESS_MAX_SLOTS = 5;
+        var studyMeta = { mode: 'smart', dateKey: '' }; // 本场复习的来源
+        var studySessionOpen = false;   // 本场是否进行中（完成后关闭，防止完成页/退出后再写档）
+        var pendingStartState = null;   // 「继续上次」弹窗打开期间暂存的启动参数
+
+        function studySlotKey(meta) {
+            return meta && meta.mode === 'date' ? 'date:' + (meta.dateKey || '') : 'smart';
+        }
+        function readProgressStore() {
+            try {
+                var raw = localStorage.getItem(STUDY_PROGRESS_KEY);
+                if (!raw) return { version: 1, sessions: {} };
+                var s = JSON.parse(raw);
+                if (!s || typeof s !== 'object' || !s.sessions || typeof s.sessions !== 'object') return { version: 1, sessions: {} };
+                return s;
+            } catch (e) { return { version: 1, sessions: {} }; }
+        }
+        function writeProgressStore(s) {
+            try { localStorage.setItem(STUDY_PROGRESS_KEY, JSON.stringify(s)); } catch (e) {}
+        }
+        function loadStudyProgress(meta) {
+            var s = readProgressStore();
+            var key = studySlotKey(meta);
+            var p = s.sessions[key];
+            if (!p) return null;
+            // 结构校验
+            var valid = p && p.version === 1 && Array.isArray(p.ids) && p.ids.length > 0 &&
+                typeof p.index === 'number' && typeof p.savedAt === 'number';
+            // 时效校验：超过7天的存档视为陈旧，作废
+            if (valid && (Date.now() - p.savedAt) > 7 * 24 * 3600 * 1000) valid = false;
+            if (!valid) { delete s.sessions[key]; writeProgressStore(s); return null; }
+            return p;
+        }
+        function clearStudyProgress(meta) {
+            var s = readProgressStore();
+            delete s.sessions[studySlotKey(meta)];
+            writeProgressStore(s);
+        }
+        // 按当前场上状态写存档（切词 / 忘记了 / 退出复习页 / 关页面时都会调）
+        function saveStudyProgress() {
+            if (!studySessionOpen || studyWords.length === 0) return;
+            try {
+                var idx = Math.min(Math.max(studyIndex, 0), studyWords.length - 1);
+                var cur = studyWords[idx];
+                var marked = [];
+                for (var k in markedThisSession) { if (markedThisSession[k]) marked.push(k); }
+                var fc = {};
+                for (var k2 in forgetCounts) { if (forgetCounts[k2]) fc[k2] = forgetCounts[k2]; }
+                var payload = {
+                    version: 1,
+                    mode: studyMeta.mode, dateKey: studyMeta.dateKey || '',
+                    ids: studyWords.map(function(w) { return w.id; }),  // 保存队列顺序（含打乱与忘记词移位结果）
+                    currentId: cur ? cur.id : null,
+                    index: idx,
+                    meaningVisible: !!meaningVisible,   // 中断时释义是否展开
+                    forgetCounts: fc, forgetClicks: forgetClicks,
+                    pendingForgetId: pendingForgetId,
+                    markedIds: marked,                  // 本场已标记过的词（恢复后防重复标记）
+                    savedAt: Date.now()
+                };
+                var store = readProgressStore();
+                store.sessions[studySlotKey(studyMeta)] = payload;
+                var keys = Object.keys(store.sessions);
+                if (keys.length > STUDY_PROGRESS_MAX_SLOTS) { // 槽位剪枝：按保存时间只留最近N个
+                    keys.sort(function(a, b) { return (store.sessions[b].savedAt || 0) - (store.sessions[a].savedAt || 0); });
+                    for (var i = STUDY_PROGRESS_MAX_SLOTS; i < keys.length; i++) delete store.sessions[keys[i]];
+                }
+                writeProgressStore(store);
+            } catch (e) {}
+        }
+        // 用存档重建队列：过滤已被删除的词，按 currentId 精确定位断点（找不到退回 index）
+        function rebuildFromProgress(p) {
+            var byId = {};
+            for (var i = 0; i < words.length; i++) byId[words[i].id] = words[i];
+            var list = [];
+            for (var j = 0; j < p.ids.length; j++) { if (byId[p.ids[j]]) list.push(byId[p.ids[j]]); }
+            if (list.length === 0) return { valid: false };
+            var idx = -1;
+            if (p.currentId) {
+                for (var k = 0; k < list.length; k++) { if (list[k].id === p.currentId) { idx = k; break; } }
+            }
+            if (idx < 0) idx = Math.min(Math.max(p.index || 0, 0), list.length - 1);
+            return { valid: true, list: list, index: idx };
+        }
+
+        // ---------------- 「继续上次」弹窗 ----------------
+        function showResumeDialog(saved, rebuilt, wordList, meta) {
+            pendingStartState = { list: wordList, meta: meta, saved: saved, rebuilt: rebuilt };
+            var cur = rebuilt.list[rebuilt.index];
+            var when = '';
+            try {
+                when = new Date(saved.savedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+            } catch (e) { when = ''; }
+            var src = meta.mode === 'date' ? ('按日期复习 ' + (meta.dateKey || '')) : '智能复习';
+            document.getElementById('resume-desc').textContent =
+                src + '断点：第 ' + (rebuilt.index + 1) + ' / ' + rebuilt.list.length + ' 个';
+            document.getElementById('resume-extra').textContent =
+                (cur ? '当前单词：' + cur.word + '　' : '') + '（进度保存于 ' + when + '）';
+            document.getElementById('resume-modal').classList.add('show');
+        }
+        function closeResumeDialog() {
+            document.getElementById('resume-modal').classList.remove('show');
+            pendingStartState = null; // 只关弹窗：存档保留，下次点开始还会再问
+        }
+        function restartFromScratch() {
+            var st = pendingStartState;
+            document.getElementById('resume-modal').classList.remove('show');
+            pendingStartState = null;
+            if (!st) return;
+            if (!st.list || st.list.length === 0) { // 断点词表已全被删除且到期表也为空 → 没得重来
+                clearStudyProgress(st.meta);
+                showToast('没有可复习的单词');
+                return;
+            }
+            clearStudyProgress(st.meta);  // 放弃旧存档
+            beginStudy(st.list, st.meta); // 重新开一轮（重新打乱）
+        }
+        function resumeStudySession() {
+            var st = pendingStartState;
+            document.getElementById('resume-modal').classList.remove('show');
+            pendingStartState = null;
+            if (!st || !st.rebuilt || !st.rebuilt.valid) return;
+
+            studyMeta = { mode: st.meta.mode, dateKey: st.meta.dateKey || '' };
+            studyWords = st.rebuilt.list;   // 保留中断时的队列顺序（打乱结果与忘记词移位都在其中）
+            studyIndex = st.rebuilt.index;
+            meaningVisible = false;
+            markedThisSession = {};         // 恢复本场已标记集合 → 回看旧词不会重复标记、间隔不会双算
+            var ids = {};
+            for (var i = 0; i < studyWords.length; i++) ids[studyWords[i].id] = true;
+            (st.saved.markedIds || []).forEach(function(id) { if (ids[id]) markedThisSession[id] = true; });
+            forgetCounts = {};              // 只保留仍在队列里的词的忘记次数（被删的词不留脏数据）
+            var fcSrc = st.saved.forgetCounts || {};
+            for (var k in fcSrc) { if (ids[k]) forgetCounts[k] = fcSrc[k]; }
+            forgetClicks = st.saved.forgetClicks || 0;
+            pendingForgetId = (st.saved.pendingForgetId && ids[st.saved.pendingForgetId]) ? st.saved.pendingForgetId : null;
+            studySessionOpen = true;
+            var restoreReveal = !!st.saved.meaningVisible; // 中断时释义是展开的 → 恢复后保持展开
+
+            resetCardStyle();
+            document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
+            document.getElementById('page-study').classList.add('active');
+            renderStudyWord(); // 末尾会把当前状态重新存档（断点自动前移覆盖旧档）
+
+            if (restoreReveal && !meaningVisible) {
+                meaningVisible = true;
+                revealMeaning(); // 展示但不标记（与 toggleMeaning 的标记逻辑解耦）
+                document.getElementById('hint-text').textContent = '点击屏幕或按空格键隐藏释义';
+            }
+            showToast('📋 已恢复：第 ' + (studyIndex + 1) + ' / ' + studyWords.length + ' 个');
+        }
+
+        // ---------------- 入口：带断点检测的 startStudy ----------------
+        async function startStudy(wordList, meta) {
+            meta = meta || { mode: 'smart' };
+            // 来源切换防护：先关掉可能开着的旧弹窗，避免残留过期内容
+            var openModal = document.getElementById('resume-modal');
+            if (openModal && openModal.classList.contains('show')) {
+                openModal.classList.remove('show');
+                pendingStartState = null;
+            }
+            var saved = loadStudyProgress(meta);
+            if (saved) {
+                var rebuilt = rebuildFromProgress(saved);
+                if (rebuilt.valid) { showResumeDialog(saved, rebuilt, wordList, meta); return; } // 问用户：继续 or 重来
+                clearStudyProgress(meta); // 队列里的词全被删了 → 存档作废
+            }
+            await beginStudy(wordList, meta);
+        }
+
+        // 真正开始一轮复习（从头打乱）
+        async function beginStudy(wordList, meta) {
+            studyMeta = { mode: meta.mode, dateKey: meta.dateKey || '' };
             studyWords = shuffleEnabled ? shuffleArray(wordList) : [...wordList];
             studyIndex = 0;
             meaningVisible = false;
@@ -2264,9 +2459,9 @@
             forgetCounts = {};      // 重置「忘记了」次数
             forgetClicks = 0;
             pendingForgetId = null; // 重置「已忘记待离开」状态
+            studySessionOpen = true;
+            clearStudyProgress(studyMeta); // 新一轮开始 → 旧存档作废（renderStudyWord 末尾会存新档）
             resetCardStyle();       // 清掉卡片上可能残留的切词动画样式
-
-            // ⚠️ 不再在这里批量标记，改为逐个标记（见 markWordReviewed）
 
             document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
             document.getElementById('page-study').classList.add('active');
@@ -2379,6 +2574,9 @@
                     try { speakWord(word.word); } catch (e) {}
                 }, 300);
             }
+
+            // 断点存档：每切一次词就记录进度（C1 中断可继续）
+            saveStudyProgress();
         }
 
         // 释义平滑展开（优化2）：height 由 JS 实测驱动过渡，opacity/margin 由 CSS 类驱动
@@ -2596,6 +2794,10 @@
 
         // ====== 复习完成页：今日复习数 / 忘记数 / 明天待复习数 ======
         function showCompletePage() {
+            // 复习全部完成 → 关闭本场存档（否则关页面时会把完成态又写回去）
+            studySessionOpen = false;
+            clearStudyProgress(studyMeta);
+
             var today = localDateStr();
             var t = new Date();
             t.setDate(t.getDate() + 1);
@@ -2657,6 +2859,8 @@
             var fbM = document.getElementById('forget-btn-mobile');
             if (fbD) fbD.classList.toggle('disabled', !canForget);
             if (fbM) fbM.classList.toggle('disabled', !canForget);
+
+            saveStudyProgress(); // 忘记状态已变化 → 更新断点存档
         }
 
         // 离开当前词的统一处理：正常词→标记已复习；「忘记了」的词→移到队尾且不标记
@@ -2676,6 +2880,7 @@
             // 退出时标记最后停留的词（如果看过释义则已标记，这里补充翻页未标记的情况）
             // 注意：不标记最后一个词，因为用户可能只是打开没看就退出了
             if (cardAnimTimer) { clearTimeout(cardAnimTimer); cardAnimTimer = null; } // 作废未完成的切词动画
+            saveStudyProgress(); // 中途退出 → 存下断点（下次进入可「继续上次」）
             document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
             document.getElementById('page-review').classList.add('active');
             updateReviewStats();
@@ -2810,6 +3015,25 @@
             if (swipeTouchId !== null) springBackCard();
             swipeTouchId = null;
         }, { passive: true });
+
+        // 关页面 / 切后台前把断点存下来（C1：杀进程、点返回键也不丢进度）
+        window.addEventListener('pagehide', function() { saveStudyProgress(); });
+        document.addEventListener('visibilitychange', function() {
+            if (document.visibilityState === 'hidden') saveStudyProgress();
+        });
+
+        // 「继续上次」弹窗键盘支持：Enter=继续断点，Esc=关闭
+        document.addEventListener('keydown', function(e) {
+            var m = document.getElementById('resume-modal');
+            if (!m || !m.classList.contains('show')) return;
+            if (e.key === 'Escape') {
+                closeResumeDialog();
+            } else if (e.key === 'Enter') {
+                // 焦点在按钮上时交给按钮自己响应，避免一次按键触发两遍
+                if (document.activeElement && document.activeElement.tagName === 'BUTTON') return;
+                resumeStudySession();
+            }
+        });
 
         // ==================== 统计功能 ====================
         function updateStats() {
