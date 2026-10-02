@@ -2108,18 +2108,8 @@
         }
 
         function startSmartReview() {
-            const smartWords = getSmartReviewWords();
-            if (smartWords.length === 0) {
-                // 到期列表为空，但若存在未完成的智能复习断点，仍允许进入继续（断点队列自带词表）
-                var saved = loadStudyProgress({ mode: 'smart' });
-                if (saved && rebuildFromProgress(saved).valid) {
-                    startStudy(smartWords, { mode: 'smart' });
-                    return;
-                }
-                showToast('今天没有需要复习的单词，太棒了！');
-                return;
-            }
-            startStudy(smartWords, { mode: 'smart' });
+            // 空队列 / 断点检测统一交给 startStudy（它会先跨设备合并断点再判断）
+            startStudy(getSmartReviewWords(), { mode: 'smart' });
         }
 
         // ====== 按日期复习：日历（支持翻月，可回看任意历史月份）======
@@ -2351,23 +2341,127 @@
         function writeProgressStore(s) {
             try { localStorage.setItem(STUDY_PROGRESS_KEY, JSON.stringify(s)); } catch (e) {}
         }
+        function progressPayloadValid(p) {
+            return !!(p && p.version === 1 && Array.isArray(p.ids) && p.ids.length > 0 &&
+                typeof p.index === 'number' && typeof p.savedAt === 'number' &&
+                (Date.now() - p.savedAt) <= 7 * 24 * 3600 * 1000); // 超过7天视为陈旧
+        }
         function loadStudyProgress(meta) {
             var s = readProgressStore();
             var key = studySlotKey(meta);
             var p = s.sessions[key];
             if (!p) return null;
-            // 结构校验
-            var valid = p && p.version === 1 && Array.isArray(p.ids) && p.ids.length > 0 &&
-                typeof p.index === 'number' && typeof p.savedAt === 'number';
-            // 时效校验：超过7天的存档视为陈旧，作废
-            if (valid && (Date.now() - p.savedAt) > 7 * 24 * 3600 * 1000) valid = false;
-            if (!valid) { delete s.sessions[key]; writeProgressStore(s); return null; }
+            if (!progressPayloadValid(p)) { // 结构损坏或超过7天 → 本地作废 + 云端同步删除
+                delete s.sessions[key];
+                writeProgressStore(s);
+                pushStudyProgressSlot(key);
+                return null;
+            }
             return p;
         }
         function clearStudyProgress(meta) {
+            var key = studySlotKey(meta);
             var s = readProgressStore();
-            delete s.sessions[studySlotKey(meta)];
+            delete s.sessions[key];
             writeProgressStore(s);
+            pushStudyProgressSlot(key); // 本地已无此槽 → 云端同步删除
+        }
+
+        // ---------------- 断点存档跨设备同步（localStorage=即时缓存，Supabase=手机/电脑共享） ----------------
+        var progressPushTimer = null;
+        var pendingPushSlots = {};
+        var lastMergeAt = 0;
+
+        function deleteRemoteSlotRaw(slotKey) {
+            if (!supabaseClient || !currentUser) return;
+            try {
+                var req = supabaseClient.from('study_progress').delete()
+                    .eq('user_id', currentUser.id).eq('slot_key', slotKey);
+                if (req && typeof req.then === 'function') req.then(function() {}, function() {});
+            } catch (e) {}
+        }
+        // 把本地某槽推上云端；本地没有该槽 = 云端删除该槽
+        function pushStudyProgressSlot(slotKey) {
+            if (!supabaseClient || !currentUser) return;
+            try {
+                var store = readProgressStore();
+                var p = store.sessions[slotKey];
+                if (!p) { deleteRemoteSlotRaw(slotKey); return; }
+                var req = supabaseClient.from('study_progress').upsert({
+                    user_id: currentUser.id,
+                    slot_key: slotKey,
+                    payload: p,
+                    updated_at: new Date().toISOString()
+                });
+                if (req && typeof req.then === 'function') req.then(function() {}, function() {});
+            } catch (e) {}
+        }
+        // 写档频繁（每切一词一次）→ 节流600ms合并推送；退出/关页面时 flush 立即推
+        function schedulePushStudyProgress(slotKey) {
+            pendingPushSlots[slotKey] = true;
+            if (progressPushTimer) return;
+            progressPushTimer = setTimeout(flushStudyProgressPush, 600);
+        }
+        function flushStudyProgressPush() {
+            if (progressPushTimer) { clearTimeout(progressPushTimer); progressPushTimer = null; }
+            var keys = Object.keys(pendingPushSlots);
+            pendingPushSlots = {};
+            for (var i = 0; i < keys.length; i++) pushStudyProgressSlot(keys[i]);
+        }
+        // 进复习前：拉云端全部断点 → 与本地逐槽合并（保存时间新者胜）
+        // 云端新→覆盖本地；本地新→回传云端；本地独有（离线产生的档）→上传；云端坏档→删除
+        async function mergeStudyProgressFromDB() {
+            if (!supabaseClient || !currentUser) return;
+            if (Date.now() - lastMergeAt < 4000) return; // 防连着触发两次
+            lastMergeAt = Date.now();
+            try {
+                var res = await withTimeout(supabaseClient.from('study_progress')
+                    .select('slot_key, payload').eq('user_id', currentUser.id), 8000, '断点同步超时');
+                if (!res || res.error || !Array.isArray(res.data)) return;
+
+                var store = readProgressStore();
+                // 本地先剪枝（与写档同规则，最多5槽），避免把马上要淘汰的槽推上去
+                var lk = Object.keys(store.sessions);
+                if (lk.length > STUDY_PROGRESS_MAX_SLOTS) {
+                    lk.sort(function(a, b) { return (store.sessions[b].savedAt || 0) - (store.sessions[a].savedAt || 0); });
+                    for (var t = STUDY_PROGRESS_MAX_SLOTS; t < lk.length; t++) delete store.sessions[lk[t]];
+                }
+
+                var remoteKeys = {};
+                var validRows = [];
+                for (var i = 0; i < res.data.length; i++) {
+                    var row = res.data[i];
+                    var rp = row.payload;
+                    if (!progressPayloadValid(rp)) { // 云端坏档/过期档 → 删
+                        deleteRemoteSlotRaw(row.slot_key);
+                        continue;
+                    }
+                    remoteKeys[row.slot_key] = true;
+                    validRows.push(row);
+                    var lp = store.sessions[row.slot_key];
+                    if (!lp) {
+                        store.sessions[row.slot_key] = rp;               // 云端有本地无 → 拉下来（其他设备的断点）
+                    } else if ((rp.savedAt || 0) > (lp.savedAt || 0)) {
+                        store.sessions[row.slot_key] = rp;               // 云端更新 → 覆盖本地
+                    } else if ((lp.savedAt || 0) > (rp.savedAt || 0)) {
+                        pushStudyProgressSlot(row.slot_key);             // 本地更新 → 推上去
+                    }
+                }
+                // 本地独有（本机离线时产生的档、或云端还没建过）→ 上传
+                var nowLocal = Object.keys(store.sessions);
+                for (var j = 0; j < nowLocal.length; j++) {
+                    if (!remoteKeys[nowLocal[j]]) pushStudyProgressSlot(nowLocal[j]);
+                }
+                writeProgressStore(store);
+
+                // 云端超5槽清理（按保存时间只留最近的）
+                if (validRows.length > STUDY_PROGRESS_MAX_SLOTS) {
+                    validRows.sort(function(a, b) {
+                        return ((b.payload && b.payload.savedAt) || 0) - ((a.payload && a.payload.savedAt) || 0);
+                    });
+                    for (var n = STUDY_PROGRESS_MAX_SLOTS; n < validRows.length; n++) deleteRemoteSlotRaw(validRows[n].slot_key);
+                }
+            } catch (e) {} // 网络失败静默：退回本地档，不影响进入复习
         }
         // 按当前场上状态写存档（切词 / 忘记了 / 退出复习页 / 关页面时都会调）
         function saveStudyProgress() {
@@ -2399,6 +2493,7 @@
                     for (var i = STUDY_PROGRESS_MAX_SLOTS; i < keys.length; i++) delete store.sessions[keys[i]];
                 }
                 writeProgressStore(store);
+                schedulePushStudyProgress(studySlotKey(studyMeta)); // 节流推上云端（跨设备同步）
             } catch (e) {}
         }
         // 用存档重建队列：过滤已被删除的词，按 currentId 精确定位断点（找不到退回 index）
@@ -2492,11 +2587,16 @@
                 openModal.classList.remove('show');
                 pendingStartState = null;
             }
+            await mergeStudyProgressFromDB(); // 跨设备：先拉取其他端（手机/电脑）存下的断点
             var saved = loadStudyProgress(meta);
             if (saved) {
                 var rebuilt = rebuildFromProgress(saved);
                 if (rebuilt.valid) { showResumeDialog(saved, rebuilt, wordList, meta); return; } // 问用户：继续 or 重来
                 clearStudyProgress(meta); // 队列里的词全被删了 → 存档作废
+            }
+            if (!wordList || wordList.length === 0) { // 到期词为空且无可继续的断点
+                if (meta.mode !== 'date') showToast('今天没有需要复习的单词，太棒了！');
+                return;
             }
             await beginStudy(wordList, meta);
         }
@@ -2943,6 +3043,7 @@
             // 注意：不标记最后一个词，因为用户可能只是打开没看就退出了
             if (cardAnimTimer) { clearTimeout(cardAnimTimer); cardAnimTimer = null; } // 作废未完成的切词动画
             saveStudyProgress(); // 中途退出 → 存下断点（下次进入可「继续上次」）
+            flushStudyProgressPush(); // 立即推上云端（另一台设备要能读到这个断点）
             document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
             document.getElementById('page-review').classList.add('active');
             updateReviewStats();
@@ -3078,10 +3179,10 @@
             swipeTouchId = null;
         }, { passive: true });
 
-        // 关页面 / 切后台前把断点存下来（C1：杀进程、点返回键也不丢进度）
-        window.addEventListener('pagehide', function() { saveStudyProgress(); });
+        // 关页面 / 切后台前把断点存下来（C1：杀进程、点返回键也不丢进度），并立即推云端
+        window.addEventListener('pagehide', function() { saveStudyProgress(); flushStudyProgressPush(); });
         document.addEventListener('visibilitychange', function() {
-            if (document.visibilityState === 'hidden') saveStudyProgress();
+            if (document.visibilityState === 'hidden') { saveStudyProgress(); flushStudyProgressPush(); }
         });
 
         // 「继续上次」弹窗键盘支持：Enter=继续断点，Esc=关闭
