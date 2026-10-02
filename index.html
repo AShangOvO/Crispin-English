@@ -400,6 +400,29 @@
         .meaning-empty-cell { min-width: 0; }
         .hint-text { font-size: 14px; color: #999; margin-top: 16px; }
 
+        /* ====== 复习完成页：本次复习单词汇总（点击单词展开释义，右端为下次复习时间）====== */
+        .complete-summary { max-width: 560px; margin: 30px auto 0; text-align: left; }
+        .complete-summary-head { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 10px; }
+        .complete-summary-list {
+            border: 1px solid var(--border); border-radius: 12px;
+            background: var(--card); overflow: hidden;
+        }
+        .summary-row + .summary-row { border-top: 1px solid var(--border); }
+        .summary-main { display: flex; align-items: center; gap: 8px; padding: 12px 14px; cursor: pointer; }
+        .summary-word { font-size: 16px; font-weight: 600; color: var(--text); word-break: break-word; }
+        .summary-forgot {
+            flex: none; font-size: 11px; line-height: 1.7; color: #fff;
+            background: var(--danger); border-radius: 6px; padding: 0 6px;
+        }
+        .summary-when { margin-left: auto; flex: none; font-size: 12px; color: #999; white-space: nowrap; }
+        .summary-meaning {
+            display: none; padding: 0 14px 12px 14px;
+            font-size: 15px; color: var(--text); line-height: 1.6;
+            grid-template-columns: auto minmax(0, 1fr); gap: 6px 10px;
+            overflow-wrap: anywhere;
+        }
+        .summary-row.open .summary-meaning { display: grid; }
+
         /* ====== 释义动态行编辑（导入页 + 编辑弹窗共用）====== */
         .meaning-lines { display: flex; flex-direction: column; gap: 8px; }
         .meaning-line { display: flex; gap: 8px; align-items: center; }
@@ -773,7 +796,7 @@
                     <div class="card-title">🎯 选择复习模式</div>
                     <div class="review-modes">
                         <div class="mode-card" onclick="startSmartReview()">
-                            <div class="mode-icon">🧠</div>
+                            <div class="mode-icon">🐳</div>
                             <div class="mode-title">智能复习</div>
                             <div class="mode-desc">基于艾宾浩斯遗忘曲线，自动推荐今天该复习的单词</div>
                             <div class="mode-count" id="smart-count">-</div>
@@ -909,6 +932,13 @@
                             <div class="stat-label">📅 明天待复习</div>
                         </div>
                     </div>
+
+                    <!-- 本次复习单词汇总：点击单词展开释义，右端显示下次复习时间 -->
+                    <div class="complete-summary" id="complete-summary" style="display:none">
+                        <div class="complete-summary-head">📋 本次复习的单词<span id="complete-summary-count"></span></div>
+                        <div class="complete-summary-list" id="complete-summary-list"></div>
+                    </div>
+
                     <button class="btn btn-primary btn-lg" onclick="exitReview()" style="margin-top:36px">返回复习选择</button>
                 </div>
             </div>
@@ -2944,6 +2974,49 @@
             if (pageStudyActive()) playCardIn(-1); else resetCardStyle();
         }
 
+        // ====== 复习完成页：本次复习单词汇总（点击单词展开释义；右端显示几天后再次复习）======
+        function toggleSummaryRow(rowEl) {
+            if (!rowEl) return;
+            rowEl.classList.toggle('open');
+        }
+
+        function renderCompleteSummary() {
+            var wrapEl = document.getElementById('complete-summary');
+            var listEl = document.getElementById('complete-summary-list');
+            if (!wrapEl || !listEl) return;
+
+            // 本次复习的词：当前队列（完成时已全部过完），按字母排序便于查找
+            var items = studyWords.slice().sort(function(a, b) {
+                return String(a.word || '').toLowerCase().localeCompare(String(b.word || '').toLowerCase());
+            });
+            if (!items.length) { wrapEl.style.display = 'none'; return; }
+
+            var todayTs = Date.parse(localDateStr() + 'T00:00:00Z');
+            var html = '';
+            items.forEach(function(w) {
+                // 本次复习中至少忘记过一次 → 额外标注「忘记了」
+                var forgot = (forgetCounts[w.id] || 0) > 0;
+                // 距下次复习还有几天（0 及以内 → 今天）
+                var whenText = '—';
+                if (w.next_review) {
+                    var days = Math.round((Date.parse(w.next_review + 'T00:00:00Z') - todayTs) / 86400000);
+                    if (!isNaN(days)) whenText = days <= 0 ? '今天' : (days + ' 天后');
+                }
+                html += '<div class="summary-row" onclick="toggleSummaryRow(this)">' +
+                            '<div class="summary-main">' +
+                                '<span class="summary-word">' + escapeHtml(w.word) + '</span>' +
+                                (forgot ? '<span class="summary-forgot">忘记了</span>' : '') +
+                                '<span class="summary-when">' + whenText + '</span>' +
+                            '</div>' +
+                            '<div class="summary-meaning">' + renderMeaningLines(w.meaning) + '</div>' +
+                        '</div>';
+            });
+
+            listEl.innerHTML = html;
+            document.getElementById('complete-summary-count').textContent = '（' + items.length + ' 个）';
+            wrapEl.style.display = '';
+        }
+
         // ====== 复习完成页：今日复习数 / 忘记数 / 明天待复习数 ======
         function showCompletePage() {
             // 复习全部完成 → 关闭本场存档（否则关页面时会把完成态又写回去）
@@ -2967,6 +3040,9 @@
             document.getElementById('complete-today').textContent = todayCount;
             document.getElementById('complete-forgot').textContent = forgotCount;
             document.getElementById('complete-tomorrow').textContent = dueTomorrow;
+
+            // 本次复习单词汇总（点击单词展开释义）
+            renderCompleteSummary();
 
             document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
             document.getElementById('page-complete').classList.add('active');
