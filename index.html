@@ -423,6 +423,7 @@
         .side-info {
             display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 16px; margin-bottom: 24px;
+            will-change: transform, opacity; /* 拖拽跟手 + 切词出入场更顺 */
         }
         .info-box {
             background: var(--card); border-radius: 12px;
@@ -480,6 +481,15 @@
         }
         @keyframes cardEnterFromLeft {
             from { transform: translateX(-80px); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        /* 切词动画：侧边信息栏（同义词/易混词/同词根）沿卡片滑入方向接力入场 */
+        @keyframes sideInfoEnterFromRight {
+            from { transform: translateX(28px); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes sideInfoEnterFromLeft {
+            from { transform: translateX(-28px); opacity: 0; }
             to { transform: translateX(0); opacity: 1; }
         }
 
@@ -2500,6 +2510,42 @@
             c.style.animation = 'none';
             void c.offsetHeight; // 强制重排：让入场动画从头播放
             c.style.animation = (dir > 0 ? 'cardEnterFromRight' : 'cardEnterFromLeft') + ' 0.22s ease';
+            playSideInfoIn(dir); // 三个信息框与卡片同拍入场
+        }
+
+        // ====== 侧边信息栏（同义词/易混词/同词根）切词动画 ======
+        function getSideInfo() { return document.querySelector('.side-info'); }
+
+        // 入场：沿卡片滑入方向逐框接力（阶梯延迟），避免整块内容生硬地直接替换
+        function playSideInfoIn(dir) {
+            var si = getSideInfo();
+            if (!si) return;
+            // 清掉拖拽跟手 / 出场留下的容器位移与透明度
+            si.style.transition = 'none';
+            si.style.transform = '';
+            si.style.opacity = '';
+            void si.offsetHeight;
+            si.style.transition = '';
+            var name = dir > 0 ? 'sideInfoEnterFromRight' : 'sideInfoEnterFromLeft';
+            var delay = 0;
+            si.querySelectorAll('.info-box').forEach(function(b) {
+                if (b.style.display === 'none') return;
+                b.style.animation = 'none';
+                void b.offsetHeight; // 强制重排：让每个框都从头播放
+                b.style.animation = name + ' 0.24s ease both ' + delay + 's';
+                delay += 0.05;
+            });
+        }
+
+        // 出场：从跟手停下的位置继续顺着滑动方向推出去（时长对齐卡片的 180ms）
+        // 这样无论拖得远近，退场都有一段可见位移，而不是原地干瞪眼地淡掉
+        function playSideInfoOut(dir, dx) {
+            var si = getSideInfo();
+            if (!si || si.style.display === 'none') return;
+            var from = (dx || 0) * 0.4; // 与 touchmove 的视差倍率一致，位移连续不跳变
+            si.style.transition = 'transform 0.18s ease, opacity 0.18s ease';
+            si.style.transform = 'translateX(' + (from + (dir > 0 ? -80 : 80)) + 'px)';
+            si.style.opacity = '0';
         }
 
         // 未达滑动门槛 / 手势作废 → 卡片弹回原位
@@ -2508,17 +2554,31 @@
             c.style.transition = 'transform 0.25s ease, opacity 0.25s ease';
             c.style.transform = 'translateX(0)';
             c.style.opacity = '1';
+            var si = getSideInfo();
+            if (si && si.style.display !== 'none') { // 信息栏一起回弹
+                si.style.transition = 'transform 0.25s ease, opacity 0.25s ease';
+                si.style.transform = 'translateX(0)';
+                si.style.opacity = '1';
+            }
         }
 
-        // 清掉卡片上残留的内联动画样式（入场结束 / 退出复习页后）
+        // 清掉卡片与信息栏上残留的内联动画样式（入场结束 / 退出复习页后）
         function resetCardStyle() {
             var c = studyCard();
             c.style.transition = 'none';
             c.style.transform = '';
             c.style.opacity = '';
             c.style.animation = '';
+            var si = getSideInfo();
+            if (si) {
+                si.style.transition = 'none';
+                si.style.transform = '';
+                si.style.opacity = '';
+                si.querySelectorAll('.info-box').forEach(function(b) { b.style.animation = ''; });
+            }
             void c.offsetHeight;
             c.style.transition = '';
+            if (si) si.style.transition = '';
         }
 
         // 按钮 / 键盘切词入口（带入场动画；出场动画进行中忽略，防连按跳词）
@@ -2681,6 +2741,13 @@
             c.style.transition = 'none';             // 跟随阶段禁用过渡，纯跟手指
             c.style.transform = 'translateX(' + dx + 'px)';
             c.style.opacity = String(1 - Math.min(Math.abs(dx) / 600, 0.35)); // 轻微淡出更有拖拽感
+            // 信息栏以 0.4 倍速视差跟随，让整页一起动而不是卡片单独飘
+            var si = getSideInfo();
+            if (si && si.style.display !== 'none') {
+                si.style.transition = 'none';
+                si.style.transform = 'translateX(' + (dx * 0.4) + 'px)';
+                si.style.opacity = String(1 - Math.min(Math.abs(dx) / 900, 0.3));
+            }
         }, { passive: true });
 
         document.addEventListener('touchend', function(e) {
@@ -2726,6 +2793,7 @@
                 card.style.transition = 'transform 0.18s ease, opacity 0.18s ease';
                 card.style.transform = dir > 0 ? 'translateX(-110%)' : 'translateX(110%)';
                 card.style.opacity = '0';
+                playSideInfoOut(dir, endTouch.screenX - swipeStartX); // 信息栏同拍同向退场
                 cardAnimTimer = setTimeout(function() {
                     cardAnimTimer = null;
                     if (!pageStudyActive()) { resetCardStyle(); return; } // 已退出复习页→只清理
