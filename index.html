@@ -1368,6 +1368,16 @@
             if (error) throw error;
         }
 
+        // 写库带重试：失败自动重试1次，仍失败则提示用户（以前静默吞掉失败，复习记录会悄悄丢失）
+        function updateWordInDBWithRetry(id, updates, failMessage) {
+            updateWordInDB(id, updates).catch(function() {
+                return updateWordInDB(id, updates);
+            }).catch(function(e) {
+                console.warn('数据库写入失败', e);
+                showToast(failMessage || '⚠️ 网络异常，数据可能未保存');
+            });
+        }
+
         async function deleteWordFromDB(id) {
             const { error } = await supabaseClient
                 .from('words')
@@ -1482,7 +1492,7 @@
                         synonyms: w.synonyms || [],
                         distinguish: w.distinguish || [],
                         rootWords: w.rootWords || w.root_words || [],
-                        date: w.date || new Date().toISOString().split('T')[0]
+                        date: w.date || localDateStr()
                     });
                     existing.add(key); // 本批内也记上，防止同文件内重复
                     successCount++;
@@ -1514,7 +1524,7 @@
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'vocab-backup-' + new Date().toISOString().split('T')[0] + '.json';
+            a.download = 'vocab-backup-' + localDateStr() + '.json';
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
@@ -1564,7 +1574,7 @@
 
         // ==================== 导入功能 ====================
         function setToday() {
-            document.getElementById('import-date').value = new Date().toISOString().split('T')[0];
+            document.getElementById('import-date').value = localDateStr();
         }
 
         // 同义词标签输入
@@ -1590,7 +1600,7 @@
             synonyms.forEach((s, i) => {
                 const tag = document.createElement('span');
                 tag.className = 'tag';
-                tag.innerHTML = `${s} <span class="tag-remove" onclick="removeSynonym(${i})">×</span>`;
+                tag.innerHTML = `${escapeHtml(s)} <span class="tag-remove" onclick="removeSynonym(${i})">×</span>`;
                 synonymsContainer.insertBefore(tag, synonymInput);
             });
         }
@@ -1826,7 +1836,7 @@
                 return `
                 <div class="word-item">
                     <div class="word-info">
-                        <div class="word-text">${w.word}</div>
+                        <div class="word-text">${escapeHtml(w.word)}</div>
                         <div class="word-meaning">${escapeHtml(String(w.meaning || '').replace(/\n/g, ' · '))}</div>
                         <div class="word-meta">
                             📅 ${w.date}
@@ -1867,7 +1877,7 @@
             editSynonyms.forEach((s, i) => {
                 const tag = document.createElement('span');
                 tag.className = 'tag';
-                tag.innerHTML = `${s} <span class="tag-remove" onclick="removeEditSynonym(${i})">×</span>`;
+                tag.innerHTML = `${escapeHtml(s)} <span class="tag-remove" onclick="removeEditSynonym(${i})">×</span>`;
                 editSynonymsContainer.insertBefore(tag, editSynonymInput);
             });
         }
@@ -1913,7 +1923,7 @@
                 (w.distinguish || []).forEach(d => {
                     const item = document.createElement('div');
                     item.className = 'distinguish-item';
-                    item.innerHTML = `<input type="text" class="form-input" placeholder="单词" value="${d.word || ''}"><input type="text" class="form-input" placeholder="释义" value="${d.meaning || ''}"><button type="button" class="remove-dist" onclick="this.parentElement.remove()">×</button>`;
+                    item.innerHTML = `<input type="text" class="form-input" placeholder="单词" value="${escapeHtml(d.word || '')}"><input type="text" class="form-input" placeholder="释义" value="${escapeHtml(d.meaning || '')}"><button type="button" class="remove-dist" onclick="this.parentElement.remove()">×</button>`;
                     distList.appendChild(item);
                 });
 
@@ -1922,7 +1932,7 @@
                 (w.root_words || []).forEach(r => {
                     const item = document.createElement('div');
                     item.className = 'root-word-item';
-                    item.innerHTML = `<input type="text" class="form-input" placeholder="单词" value="${r.word || ''}"><input type="text" class="form-input" placeholder="释义" value="${r.meaning || ''}"><button type="button" class="remove-root" onclick="this.parentElement.remove()">×</button>`;
+                    item.innerHTML = `<input type="text" class="form-input" placeholder="单词" value="${escapeHtml(r.word || '')}"><input type="text" class="form-input" placeholder="释义" value="${escapeHtml(r.meaning || '')}"><button type="button" class="remove-root" onclick="this.parentElement.remove()">×</button>`;
                     rootList.appendChild(item);
                 });
 
@@ -2025,7 +2035,7 @@
         }
 
         function getSmartReviewWords() {
-            const today = new Date().toISOString().split('T')[0];
+            const today = localDateStr();
             return words.filter(w => {
                 if (!w.next_review) return true;
                 return w.next_review <= today;
@@ -2190,12 +2200,12 @@
             if (!word || markedThisSession[word.id]) return;
             markedThisSession[word.id] = true;
 
-            var today = new Date().toISOString().split('T')[0];
+            var today = localDateStr();
             var newCount = (word.review_count || 0) + 1;
             var intervalIndex = Math.min(newCount, REVIEW_INTERVALS.length - 1);
             var nextDate = new Date();
             nextDate.setDate(nextDate.getDate() + REVIEW_INTERVALS[intervalIndex]);
-            var nextReview = nextDate.toISOString().split('T')[0];
+            var nextReview = localDateStr(nextDate);
 
             word.last_review = today;
             word.review_count = newCount;
@@ -2211,12 +2221,12 @@
                 }
             }
 
-            // 写入数据库
-            updateWordInDB(word.id, {
+            // 写入数据库（失败自动重试1次，仍失败提示）
+            updateWordInDBWithRetry(word.id, {
                 lastReview: today,
                 reviewCount: newCount,
                 nextReview: nextReview
-            }).catch(function() {});
+            }, '⚠️ 复习记录保存失败，请检查网络');
         }
 
         async function startStudy(wordList) {
@@ -2281,7 +2291,7 @@
             if (word.synonyms && word.synonyms.length > 0) {
                 synonymBox.style.display = 'block';
                 document.getElementById('synonym-count').textContent = word.synonyms.length;
-                synonymContent.innerHTML = word.synonyms.map(s => `<div class="synonym-item">${s}</div>`).join('');
+                synonymContent.innerHTML = word.synonyms.map(s => `<div class="synonym-item">${escapeHtml(s)}</div>`).join('');
                 synonymContent.classList.remove('show');
             } else {
                 synonymBox.style.display = 'none';
@@ -2295,8 +2305,8 @@
                 document.getElementById('dist-count').textContent = word.distinguish.length;
                 distContent.innerHTML = word.distinguish.map((d, i) => `
                     <div class="dist-item" onclick="toggleDistMeaning(${i})" data-index="${i}">
-                        <div class="dist-word">${d.word}</div>
-                        <div class="dist-meaning" id="dist-meaning-${i}">${d.meaning}</div>
+                        <div class="dist-word">${escapeHtml(d.word)}</div>
+                        <div class="dist-meaning" id="dist-meaning-${i}">${escapeHtml(d.meaning)}</div>
                     </div>
                 `).join('');
             } else {
@@ -2312,8 +2322,8 @@
                 document.getElementById('root-count').textContent = rootWords.length;
                 rootContent.innerHTML = rootWords.map((r, i) => `
                     <div class="dist-item" onclick="toggleRootMeaning(${i})" data-index="${i}">
-                        <div class="dist-word">${r.word}</div>
-                        <div class="dist-meaning" id="root-meaning-${i}">${r.meaning}</div>
+                        <div class="dist-word">${escapeHtml(r.word)}</div>
+                        <div class="dist-meaning" id="root-meaning-${i}">${escapeHtml(r.meaning)}</div>
                     </div>
                 `).join('');
             } else {
@@ -2439,10 +2449,10 @@
 
         // ====== 复习完成页：今日复习数 / 忘记数 / 明天待复习数 ======
         function showCompletePage() {
-            var today = new Date().toISOString().split('T')[0];
+            var today = localDateStr();
             var t = new Date();
             t.setDate(t.getDate() + 1);
-            var tomorrowStr = t.toISOString().split('T')[0];
+            var tomorrowStr = localDateStr(t);
 
             // 今日已复习（last_review=今天，含今天所有场次）
             var todayCount = words.filter(function(w) { return w.last_review === today; }).length;
@@ -2474,12 +2484,12 @@
             pendingForgetId = word.id; // 离开该词时再移到队尾
 
             // 数据层：锁定 next_review=今天 → 明天智能复习必出（不标记已复习、间隔不延长）
-            var today = new Date().toISOString().split('T')[0];
+            var today = localDateStr();
             word.next_review = today;
             for (var i = 0; i < words.length; i++) {
                 if (words[i].id === word.id) { words[i].next_review = today; break; }
             }
-            updateWordInDB(word.id, { nextReview: today }).catch(function() {});
+            updateWordInDBWithRetry(word.id, { nextReview: today }, '⚠️ 记录保存失败，请检查网络');
 
             // 原地直接显示该词释义（不走 toggleMeaning，避免被误标记为已复习）
             meaningVisible = true;
@@ -2619,7 +2629,7 @@
 
         // ==================== 统计功能 ====================
         function updateStats() {
-            const today = new Date().toISOString().split('T')[0];
+            const today = localDateStr();
             const todayWords = words.filter(w => w.date === today);
             const reviewedWords = words.filter(w => (w.review_count || 0) > 0);
             const smartWords = getSmartReviewWords();
@@ -2740,10 +2750,19 @@
                 + safe.substring(idx + safeQ.length);
         }
 
+        // 本地时区日期（YYYY-MM-DD）——替代 toISOString() 的 UTC 日期，避免凌晨0-8点取到"昨天"
+        function localDateStr(d) {
+            d = d || new Date();
+            var m = d.getMonth() + 1;
+            var day = d.getDate();
+            return d.getFullYear() + '-' + (m < 10 ? '0' + m : m) + '-' + (day < 10 ? '0' + day : day);
+        }
+
         function escapeHtml(str) {
+            if (str === null || str === undefined) return '';
             var div = document.createElement('div');
-            div.appendChild(document.createTextNode(str));
-            return div.innerHTML;
+            div.appendChild(document.createTextNode(String(str)));
+            return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         }
 
         // ====== 悬浮详情卡片（只显示同义词/易混词/同词根词）======
