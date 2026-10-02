@@ -17,6 +17,7 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
             background: var(--bg); color: var(--text); min-height: 100vh;
             -webkit-tap-highlight-color: transparent;
+            overflow-x: hidden; /* 切词动画卡片飞出屏幕时不产生横向滚动条 */
         }
 
         /* ====== 认证界面 ====== */
@@ -355,6 +356,7 @@
             text-align: center; box-shadow: var(--shadow); margin-bottom: 24px;
             min-height: 200px; display: flex; flex-direction: column; justify-content: center;
             cursor: pointer;
+            will-change: transform; /* 滑动跟手更顺（切词动画） */
         }
         .word-line {
             display: flex; align-items: center; justify-content: center;
@@ -369,15 +371,19 @@
         /* 手机端滑动提示 + 忘记了按钮（仅手机端显示） */
         .mobile-forget-btn { display: none; }
         /* ====== 复习展示：多行释义 + 词性标签（grid 两列对齐，整体居中）====== */
+        /* 释义平滑展开：height 由 JS 实测驱动过渡，opacity/margin 同步过渡（优化2） */
         .meaning-display {
             font-size: 20px; color: var(--text); line-height: 1.6;
             visibility: hidden; height: 0; overflow: hidden;
             display: grid; grid-template-columns: auto max-content;
             gap: 6px 12px; width: fit-content; max-width: 100%;
             align-self: center; text-align: left;
+            opacity: 0; margin-top: 0;
+            transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                        opacity 0.3s ease, margin-top 0.3s ease;
         }
         .meaning-display.show {
-            visibility: visible; height: auto; overflow: visible;
+            visibility: visible; opacity: 1; overflow: visible;
             margin-top: 16px;
         }
         .pos-tag {
@@ -466,6 +472,15 @@
         .nav-arrow.speaking { animation: pulse 1s infinite; }
         @keyframes pulse {
             0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); }
+        }
+        /* ====== 切词动画：新词卡片入场（优化1）====== */
+        @keyframes cardEnterFromRight {
+            from { transform: translateX(80px); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes cardEnterFromLeft {
+            from { transform: translateX(-80px); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
         }
 
         /* 「忘记了」按钮：与圆形按钮同尺寸，固定在行最右侧 */
@@ -844,9 +859,9 @@
 
                     <!-- 电脑端导航 -->
                     <div class="review-nav">
-                        <button class="nav-arrow" onclick="prevWord()" title="上一个 (←)">◀</button>
+                        <button class="nav-arrow" onclick="goPrev()" title="上一个 (←)">◀</button>
                         <button class="nav-arrow" onclick="speakWord()" title="发音 (P)">🔊</button>
-                        <button class="nav-arrow" onclick="nextWord()" title="下一个 (→)">▶</button>
+                        <button class="nav-arrow" onclick="goNext()" title="下一个 (→)">▶</button>
                         <button class="nav-arrow forget-btn" id="forget-btn-desktop" onclick="forgetWord()" title="忘记了 (X)">忘记了</button>
                     </div>
                     <div class="keyboard-hints">
@@ -950,6 +965,8 @@
         var studyWords = [];
         var studyIndex = 0;
         var meaningVisible = false;
+        var revealHeightTimer = null; // 释义展开完成后把高度交还给 auto 的定时器
+        var cardAnimTimer = null;     // 切词出场动画定时器（进行中=禁止再次切词，防连按跳词）
         var authMode = 'login';
         var supabaseLoaded = false;
         var supabaseClient = null;
@@ -2237,6 +2254,7 @@
             forgetCounts = {};      // 重置「忘记了」次数
             forgetClicks = 0;
             pendingForgetId = null; // 重置「已忘记待离开」状态
+            resetCardStyle();       // 清掉卡片上可能残留的切词动画样式
 
             // ⚠️ 不再在这里批量标记，改为逐个标记（见 markWordReviewed）
 
@@ -2250,11 +2268,15 @@
             if (studyWords.length === 0) return;
             const word = studyWords[studyIndex];
 
-            // 隐藏意思
+            // 隐藏意思（硬重置：切词瞬间不播释义展开动画）
             const meaningDisplay = document.getElementById('meaning-display');
+            clearTimeout(revealHeightTimer);
+            revealHeightTimer = null;
+            meaningDisplay.style.transition = 'none';
             meaningDisplay.classList.remove('show');
-            meaningDisplay.style.visibility = 'hidden';
             meaningDisplay.style.height = '0';
+            void meaningDisplay.offsetHeight; // 强制重排，让重置立即生效
+            meaningDisplay.style.transition = '';
 
             document.getElementById('main-word').textContent = word.word;
             meaningDisplay.innerHTML = renderMeaningLines(word.meaning); // 多行释义 + 词性彩色标签
@@ -2349,14 +2371,34 @@
             }
         }
 
+        // 释义平滑展开（优化2）：height 由 JS 实测驱动过渡，opacity/margin 由 CSS 类驱动
+        function revealMeaning() {
+            var d = document.getElementById('meaning-display');
+            d.classList.add('show');                          // visibility/opacity/边距开始过渡
+            d.style.height = d.scrollHeight + 'px';           // height 0→内容实测高度 过渡
+            clearTimeout(revealHeightTimer);
+            revealHeightTimer = setTimeout(function() {
+                revealHeightTimer = null;
+                d.style.height = 'auto';                      // 展开完成→交还auto，内容变化不截断
+            }, 320);
+        }
+
+        // 释义平滑收起：先把 auto 换成实测 px，再过渡回 0
+        function concealMeaning() {
+            var d = document.getElementById('meaning-display');
+            clearTimeout(revealHeightTimer);
+            revealHeightTimer = null;
+            d.style.height = d.scrollHeight + 'px';           // 同帧替换，无视觉变化
+            void d.offsetHeight;                              // 强制重排：过渡从这个高度起算
+            d.classList.remove('show');                       // opacity 1→0（visibility 保持可见到动画结束）
+            d.style.height = '0';
+        }
+
         function toggleMeaning() {
             meaningVisible = !meaningVisible;
-            const display = document.getElementById('meaning-display');
             const hint = document.getElementById('hint-text');
             if (meaningVisible) {
-                display.style.visibility = 'visible';
-                display.style.height = 'auto';
-                display.classList.add('show');
+                revealMeaning();
                 hint.textContent = '点击屏幕或按空格键隐藏释义';
                 // 显示释义 = 认真看了这个词 → 标记为已复习
                 // 例外：已点「忘记了」的词不标记（否则会覆盖 next_review=今天 的锁定）
@@ -2364,9 +2406,7 @@
                     markWordReviewed(studyWords[studyIndex]);
                 }
             } else {
-                display.classList.remove('show');
-                display.style.visibility = 'hidden';
-                display.style.height = '0';
+                concealMeaning();
                 hint.textContent = '点击屏幕或按空格键显示释义';
             }
         }
@@ -2447,6 +2487,53 @@
             }
         }
 
+        // ==================== 切词动画：跟手 + 出入场（优化1）====================
+        function studyCard() { return document.getElementById('word-display'); }
+        function pageStudyActive() { return document.getElementById('page-study').classList.contains('active'); }
+
+        // 新词入场：dir>0 下一个（从右侧滑入），dir<0 上一个（从左侧滑入）
+        function playCardIn(dir) {
+            var c = studyCard();
+            c.style.transition = 'none';
+            c.style.transform = '';
+            c.style.opacity = '';
+            c.style.animation = 'none';
+            void c.offsetHeight; // 强制重排：让入场动画从头播放
+            c.style.animation = (dir > 0 ? 'cardEnterFromRight' : 'cardEnterFromLeft') + ' 0.22s ease';
+        }
+
+        // 未达滑动门槛 / 手势作废 → 卡片弹回原位
+        function springBackCard() {
+            var c = studyCard();
+            c.style.transition = 'transform 0.25s ease, opacity 0.25s ease';
+            c.style.transform = 'translateX(0)';
+            c.style.opacity = '1';
+        }
+
+        // 清掉卡片上残留的内联动画样式（入场结束 / 退出复习页后）
+        function resetCardStyle() {
+            var c = studyCard();
+            c.style.transition = 'none';
+            c.style.transform = '';
+            c.style.opacity = '';
+            c.style.animation = '';
+            void c.offsetHeight;
+            c.style.transition = '';
+        }
+
+        // 按钮 / 键盘切词入口（带入场动画；出场动画进行中忽略，防连按跳词）
+        function goNext() {
+            if (cardAnimTimer) return;
+            nextWord();
+            if (pageStudyActive()) playCardIn(1); else resetCardStyle();
+        }
+        function goPrev() {
+            if (cardAnimTimer) return;
+            if (studyIndex <= 0) return; // 已是第一个词：什么都不做
+            prevWord();
+            if (pageStudyActive()) playCardIn(-1); else resetCardStyle();
+        }
+
         // ====== 复习完成页：今日复习数 / 忘记数 / 明天待复习数 ======
         function showCompletePage() {
             var today = localDateStr();
@@ -2493,10 +2580,7 @@
 
             // 原地直接显示该词释义（不走 toggleMeaning，避免被误标记为已复习）
             meaningVisible = true;
-            var md = document.getElementById('meaning-display');
-            md.style.visibility = 'visible';
-            md.style.height = 'auto';
-            md.classList.add('show');
+            revealMeaning(); // 平滑展开
             document.getElementById('hint-text').textContent = '点击屏幕或按空格键隐藏释义';
 
             // 一闪而过的提示弹窗
@@ -2531,6 +2615,7 @@
         function exitReview() {
             // 退出时标记最后停留的词（如果看过释义则已标记，这里补充翻页未标记的情况）
             // 注意：不标记最后一个词，因为用户可能只是打开没看就退出了
+            if (cardAnimTimer) { clearTimeout(cardAnimTimer); cardAnimTimer = null; } // 作废未完成的切词动画
             document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
             document.getElementById('page-review').classList.add('active');
             updateReviewStats();
@@ -2545,8 +2630,8 @@
 
             switch(e.key) {
                 case ' ': e.preventDefault(); toggleMeaning(); break;
-                case 'ArrowLeft': e.preventDefault(); prevWord(); break;
-                case 'ArrowRight': e.preventDefault(); nextWord(); break;
+                case 'ArrowLeft': e.preventDefault(); goPrev(); break;
+                case 'ArrowRight': e.preventDefault(); goNext(); break;
                 case 'p': case 'P': speakWord(); break;
                 case 'x': case 'X': forgetWord(); break;
                 case 's': case 'S': toggleSynonyms(); break;
@@ -2572,11 +2657,30 @@
                 return;
             }
             if (e.touches.length > 1) { swipeTouchId = null; return; } // 多指触控→本次手势作废
+            if (cardAnimTimer) { swipeTouchId = null; return; }        // 出场动画进行中→不接管新手势
             var t = e.changedTouches[0];
             swipeTouchId = t.identifier;
             swipeStartX = t.screenX;
             swipeStartY = t.screenY;
             swipeStartTime = Date.now();
+        }, { passive: true });
+
+        // 跟手：手指水平拖动时卡片随动（竖向为主不干预，交给页面滚动）
+        document.addEventListener('touchmove', function(e) {
+            if (swipeTouchId === null || cardAnimTimer) return;
+            if (!pageStudyActive()) { swipeTouchId = null; return; }
+            var mv = null;
+            for (var i = 0; i < e.changedTouches.length; i++) {
+                if (e.changedTouches[i].identifier === swipeTouchId) { mv = e.changedTouches[i]; break; }
+            }
+            if (!mv) return;
+            var dx = mv.screenX - swipeStartX;
+            var dy = mv.screenY - swipeStartY;
+            if (Math.abs(dx) < Math.abs(dy)) return; // 竖向为主→不跟手
+            var c = studyCard();
+            c.style.transition = 'none';             // 跟随阶段禁用过渡，纯跟手指
+            c.style.transform = 'translateX(' + dx + 'px)';
+            c.style.opacity = String(1 - Math.min(Math.abs(dx) / 600, 0.35)); // 轻微淡出更有拖拽感
         }, { passive: true });
 
         document.addEventListener('touchend', function(e) {
@@ -2601,7 +2705,7 @@
             var distance = Math.abs(diffX);
 
             // 必须水平为主（45°内）→ 纯竖向滑动不切词
-            if (distance < Math.abs(diffY)) return;
+            if (distance < Math.abs(diffY)) { springBackCard(); return; }
 
             // 滑动速度（px/ms），下限1ms防除零
             var duration = Math.max(Date.now() - swipeStartTime, 1);
@@ -2614,16 +2718,28 @@
                 distance > Math.abs(diffY) * 1.5;
 
             if (isLongSwipe || isFastSwipe) {
-                if (diffX > 0) {
-                    nextWord();
-                } else {
-                    prevWord();
-                }
+                if (cardAnimTimer) { springBackCard(); return; } // 上一次切词还没走完→弹回
+                var dir = diffX > 0 ? 1 : -1;
+                if (dir < 0 && studyIndex <= 0) { springBackCard(); return; } // 已是第一个词→弹回
+                // 出场：卡片顺着滑动方向飞出屏幕（180ms）
+                var card = studyCard();
+                card.style.transition = 'transform 0.18s ease, opacity 0.18s ease';
+                card.style.transform = dir > 0 ? 'translateX(-110%)' : 'translateX(110%)';
+                card.style.opacity = '0';
+                cardAnimTimer = setTimeout(function() {
+                    cardAnimTimer = null;
+                    if (!pageStudyActive()) { resetCardStyle(); return; } // 已退出复习页→只清理
+                    if (dir > 0) nextWord(); else prevWord();
+                    if (pageStudyActive()) playCardIn(dir); else resetCardStyle(); // 新词入场
+                }, 180);
+            } else {
+                springBackCard(); // 未达门槛→回弹（v3 判定不变）
             }
         }, { passive: true });
 
-        // 系统打断（下拉刷新、转为页面滚动、来电等）→ 作废当前手势
+        // 系统打断（下拉刷新、转为页面滚动、来电等）→ 作废当前手势 + 卡片归位
         document.addEventListener('touchcancel', function() {
+            if (swipeTouchId !== null) springBackCard();
             swipeTouchId = null;
         }, { passive: true });
 
