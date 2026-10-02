@@ -2985,27 +2985,41 @@
             var listEl = document.getElementById('complete-summary-list');
             if (!wrapEl || !listEl) return;
 
-            // 本次复习的词：当前队列（完成时已全部过完），按字母排序便于查找
-            var items = studyWords.slice().sort(function(a, b) {
-                return String(a.word || '').toLowerCase().localeCompare(String(b.word || '').toLowerCase());
+            // 先给每个词算出「是否忘记 + 距下次复习天数」，再排序：
+            // ①「忘记了」的词排最上面；② 其余按天数从近到远（今天 → 1 天后 → 2 天后 …）
+            var todayTs = Date.parse(localDateStr() + 'T00:00:00Z');
+            var items = studyWords.map(function(w) {
+                var days = null;
+                if (w.next_review) {
+                    var d = Math.round((Date.parse(w.next_review + 'T00:00:00Z') - todayTs) / 86400000);
+                    if (!isNaN(d)) days = d;
+                }
+                return {
+                    word: w,
+                    forgot: (forgetCounts[w.id] || 0) > 0, // 本次复习中至少忘记过一次
+                    days: days
+                };
             });
             if (!items.length) { wrapEl.style.display = 'none'; return; }
 
-            var todayTs = Date.parse(localDateStr() + 'T00:00:00Z');
+            items.sort(function(a, b) {
+                if (a.forgot !== b.forgot) return a.forgot ? -1 : 1; // 忘记了的排最上
+                var da = (a.days === null) ? 99999 : a.days;
+                var db = (b.days === null) ? 99999 : b.days;
+                if (da !== db) return da - db; // 按天数升序：今天 → 1 天后 → 2 天后 …
+                // 天数相同时按字母排序，保证顺序稳定
+                return String(a.word.word || '').toLowerCase().localeCompare(String(b.word.word || '').toLowerCase());
+            });
+
             var html = '';
-            items.forEach(function(w) {
-                // 本次复习中至少忘记过一次 → 额外标注「忘记了」
-                var forgot = (forgetCounts[w.id] || 0) > 0;
-                // 距下次复习还有几天（0 及以内 → 今天）
-                var whenText = '—';
-                if (w.next_review) {
-                    var days = Math.round((Date.parse(w.next_review + 'T00:00:00Z') - todayTs) / 86400000);
-                    if (!isNaN(days)) whenText = days <= 0 ? '今天' : (days + ' 天后');
-                }
+            items.forEach(function(it) {
+                var w = it.word;
+                // 右端：距下次复习还有几天（0 及以内 → 今天；无排期 → —）
+                var whenText = it.days === null ? '—' : (it.days <= 0 ? '今天' : (it.days + ' 天后'));
                 html += '<div class="summary-row" onclick="toggleSummaryRow(this)">' +
                             '<div class="summary-main">' +
                                 '<span class="summary-word">' + escapeHtml(w.word) + '</span>' +
-                                (forgot ? '<span class="summary-forgot">忘记了</span>' : '') +
+                                (it.forgot ? '<span class="summary-forgot">忘记了</span>' : '') +
                                 '<span class="summary-when">' + whenText + '</span>' +
                             '</div>' +
                             '<div class="summary-meaning">' + renderMeaningLines(w.meaning) + '</div>' +
