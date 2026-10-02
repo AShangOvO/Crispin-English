@@ -994,7 +994,9 @@
         var authMode = 'login';
         var supabaseLoaded = false;
         var supabaseClient = null;
-        var REVIEW_INTERVALS = [0, 1, 2, 4, 7, 15, 30, 60];
+        // 艾宾浩斯阶段间隔表（天）：L0 新学/忘记重学 → L8 稳固，间隔逐级递增
+        // 骨架 = 艾宾浩斯遗忘曲线的日尺度离散化，越往后复习频率越低
+        var REVIEW_INTERVALS = [1, 2, 4, 7, 15, 30, 60, 120, 240];
         var synonyms = [];
         var editSynonyms = [];
         var forgetCounts = {};   // 本次复习：单词id → 已重做次数（上限3）
@@ -1395,6 +1397,7 @@
             const dbUpdates = {};
             if (updates.lastReview !== undefined) dbUpdates.last_review = updates.lastReview;
             if (updates.reviewCount !== undefined) dbUpdates.review_count = updates.reviewCount;
+            if (updates.lapseCount !== undefined) dbUpdates.lapse_count = updates.lapseCount;
             if (updates.nextReview !== undefined) dbUpdates.next_review = updates.nextReview;
             if (updates.word !== undefined) dbUpdates.word = updates.word;
             if (updates.meaning !== undefined) dbUpdates.meaning = updates.meaning;
@@ -2077,10 +2080,31 @@
 
         function getSmartReviewWords() {
             const today = localDateStr();
-            return words.filter(w => {
+            const due = words.filter(w => {
                 if (!w.next_review) return true;
                 return w.next_review <= today;
             });
+
+            // 艾宾浩斯队列排序：逾期最久的先来 → 按到期日从早到晚
+            due.sort(function(a, b) {
+                var ka = a.next_review || '9999-99-99';
+                var kb = b.next_review || '9999-99-99';
+                if (ka !== kb) return ka < kb ? -1 : 1;
+                return 0;
+            });
+
+            // 新词（从未复习 / 忘到归零的词）不排在最前，插到队列约 1/4 处：
+            // 先用旧词热身，再混入新词，避免开头连背一堆陌生词（没有每日配额，全部一天刷完也行）
+            var fresh = [], rest = [];
+            for (var i = 0; i < due.length; i++) {
+                if (!due[i].review_count) fresh.push(due[i]);
+                else rest.push(due[i]);
+            }
+            if (fresh.length && rest.length) {
+                var pos = Math.floor(rest.length * 0.25);
+                return rest.slice(0, pos).concat(fresh, rest.slice(pos));
+            }
+            return fresh.length ? fresh : rest;
         }
 
         function startSmartReview() {
@@ -2248,21 +2272,49 @@
             markedThisSession[word.id] = true;
 
             var today = localDateStr();
-            var newCount = (word.review_count || 0) + 1;
-            var intervalIndex = Math.min(newCount, REVIEW_INTERVALS.length - 1);
+            var level = word.review_count || 0; // 现处阶段（review_count 语义升级为"阶段级别"）
+
+            // 逾期天数 = 今天 - next_review（未排期/未来日期按 0 算）
+            var overdue = 0;
+            if (word.next_review) {
+                var nd = Date.parse(word.next_review + 'T00:00:00Z');
+                var td = Date.parse(today + 'T00:00:00Z');
+                if (!isNaN(nd) && !isNaN(td)) {
+                    overdue = Math.floor((td - nd) / 86400000);
+                    if (overdue < 0) overdue = 0;
+                }
+            }
+            var planned = REVIEW_INTERVALS[Math.min(level, REVIEW_INTERVALS.length - 1)];
+
+            var newLevel;
+            if (overdue > planned * 2) {
+                // 规则C：逾期超计划间隔 2 倍 → 基本忘了 → 降 2 级再排期（拖得越久越说明没记住）
+                newLevel = Math.max(0, level - 2);
+            } else if (overdue > planned) {
+                // 规则C：逾期 1~2 倍 → 半遗忘 → 级别不变，下次仍用原间隔
+                newLevel = level;
+            } else {
+                // 规则A：按期完成 → 升 1 级
+                newLevel = level + 1;
+            }
+
+            // 下次间隔查表：正常/半遗忘用复习前级别（节奏与旧版一致：新词学完次日再来）；
+            // 降级情形用降级后的级别（短间隔，把"忘了"的词尽早排回来）
+            var idxLevel = (newLevel < level) ? newLevel : level;
+            var interval = REVIEW_INTERVALS[Math.min(idxLevel, REVIEW_INTERVALS.length - 1)];
             var nextDate = new Date();
-            nextDate.setDate(nextDate.getDate() + REVIEW_INTERVALS[intervalIndex]);
+            nextDate.setDate(nextDate.getDate() + interval);
             var nextReview = localDateStr(nextDate);
 
             word.last_review = today;
-            word.review_count = newCount;
+            word.review_count = newLevel;
             word.next_review = nextReview;
 
             // 同步到本地缓存
             for (var i = 0; i < words.length; i++) {
                 if (words[i].id === word.id) {
                     words[i].last_review = today;
-                    words[i].review_count = newCount;
+                    words[i].review_count = newLevel;
                     words[i].next_review = nextReview;
                     break;
                 }
@@ -2271,7 +2323,7 @@
             // 写入数据库（失败自动重试1次，仍失败提示）
             updateWordInDBWithRetry(word.id, {
                 lastReview: today,
-                reviewCount: newCount,
+                reviewCount: newLevel,
                 nextReview: nextReview
             }, '⚠️ 复习记录保存失败，请检查网络');
         }
@@ -2832,13 +2884,23 @@
             forgetClicks++;
             pendingForgetId = word.id; // 离开该词时再移到队尾
 
-            // 数据层：锁定 next_review=今天 → 明天智能复习必出（不标记已复习、间隔不延长）
+            // 数据层（艾宾浩斯规则B）：级别回退（最多降3级）+ 忘记次数+1，next_review=今天 → 近期必出
+            // （不标记已复习、本场间隔不延长；降级后下次复习从低级别重新爬）
             var today = localDateStr();
+            var lvl = Math.max(0, (word.review_count || 0) - 3);
+            var lapses = (word.lapse_count || 0) + 1;
             word.next_review = today;
+            word.review_count = lvl;
+            word.lapse_count = lapses;
             for (var i = 0; i < words.length; i++) {
-                if (words[i].id === word.id) { words[i].next_review = today; break; }
+                if (words[i].id === word.id) {
+                    words[i].next_review = today;
+                    words[i].review_count = lvl;
+                    words[i].lapse_count = lapses;
+                    break;
+                }
             }
-            updateWordInDBWithRetry(word.id, { nextReview: today }, '⚠️ 记录保存失败，请检查网络');
+            updateWordInDBWithRetry(word.id, { nextReview: today, reviewCount: lvl, lapseCount: lapses }, '⚠️ 记录保存失败，请检查网络');
 
             // 原地直接显示该词释义（不走 toggleMeaning，避免被误标记为已复习）
             meaningVisible = true;
