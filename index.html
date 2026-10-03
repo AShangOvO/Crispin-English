@@ -1392,15 +1392,28 @@
 
         // ==================== 数据操作（Supabase） ====================
         async function loadWords() {
-            const { data, error } = await supabaseClient
-                .from('words')
-                .select('*')
-                .order('date', { ascending: false });
-            if (error) {
-                showToast('加载数据失败: ' + error.message);
-                return;
+            // 分页拉取：Supabase 默认每页最多 1000 行，超过会静默截断（漏词）。
+            // 按 date 降序 + id 降序稳定排序，翻页不漏不重。
+            const PAGE_SIZE = 1000;
+            var all = [];
+            var from = 0;
+            while (true) {
+                const { data, error } = await supabaseClient
+                    .from('words')
+                    .select('*')
+                    .order('date', { ascending: false })
+                    .order('id', { ascending: false })
+                    .range(from, from + PAGE_SIZE - 1);
+                if (error) {
+                    showToast('加载数据失败: ' + error.message);
+                    return;
+                }
+                const rows = data || [];
+                all = all.concat(rows);
+                if (rows.length < PAGE_SIZE) break; // 不足一页 = 已取完
+                from += PAGE_SIZE;
             }
-            words = data || [];
+            words = all;
         }
 
         async function addWordToDB(wordData) {
@@ -1442,14 +1455,89 @@
             if (error) throw error;
         }
 
-        // 写库带重试：失败自动重试1次，仍失败则提示用户（以前静默吞掉失败，复习记录会悄悄丢失）
-        function updateWordInDBWithRetry(id, updates, failMessage) {
-            updateWordInDB(id, updates).catch(function() {
-                return updateWordInDB(id, updates);
-            }).catch(function(e) {
-                console.warn('数据库写入失败', e);
-                showToast(failMessage || '⚠️ 网络异常，数据可能未保存');
-            });
+        // ====== 复习记录并发保护（修复多设备互相覆盖进度）======
+        // 复习后的新状态（规则A升1级 / 规则C逾期降级）——纯函数，本地即时更新与冲突重算共用，口径一致
+        function computeReviewedState(word, today) {
+            var level = word.review_count || 0;
+            var overdue = 0;
+            if (word.next_review) {
+                var nd = Date.parse(word.next_review + 'T00:00:00Z');
+                var td = Date.parse(today + 'T00:00:00Z');
+                if (!isNaN(nd) && !isNaN(td)) {
+                    overdue = Math.floor((td - nd) / 86400000);
+                    if (overdue < 0) overdue = 0;
+                }
+            }
+            var planned = REVIEW_INTERVALS[Math.min(level, REVIEW_INTERVALS.length - 1)];
+            var newLevel;
+            if (overdue > planned * 2) {
+                newLevel = Math.max(0, level - 2); // 规则C：逾期超2倍 → 基本忘了 → 降2级
+            } else if (overdue > planned) {
+                newLevel = level;                  // 规则C：逾期1~2倍 → 级别不变
+            } else {
+                newLevel = level + 1;              // 规则A：按期 → 升1级
+            }
+            var idxLevel = (newLevel < level) ? newLevel : level;
+            var interval = REVIEW_INTERVALS[Math.min(idxLevel, REVIEW_INTERVALS.length - 1)];
+            var nextDate = new Date();
+            nextDate.setDate(nextDate.getDate() + interval);
+            return { lastReview: today, reviewCount: newLevel, nextReview: localDateStr(nextDate) };
+        }
+        // 忘记后的新状态（规则B：降3级 + 忘记次数+1，next_review=今天）
+        function computeForgotState(word, today) {
+            return {
+                reviewCount: Math.max(0, (word.review_count || 0) - 3),
+                lapseCount: (word.lapse_count || 0) + 1,
+                nextReview: today
+            };
+        }
+        // 带乐观锁写库：只有当数据库里 review_count / next_review 仍等于「本次计算所依据的旧值」时才写入。
+        // 若别的设备已先推进（旧值不匹配 → 0 行受影响），则拉最新状态重算再试（最多3次），
+        // 保证任何一方都不会用陈旧的内存值覆盖对方刚写进去的进度（原 updateWordInDBWithRetry 是盲写，会丢进度）。
+        async function saveReviewGuarded(wordId, kind, newState, oldReviewCount, oldNextReview) {
+            var curReviewCount = oldReviewCount;
+            var curNextReview = oldNextReview;
+            var state = newState;
+            for (var attempt = 0; attempt < 3; attempt++) {
+                var dbUpdate = { review_count: state.reviewCount, next_review: state.nextReview };
+                if (kind === 'forgot') dbUpdate.lapse_count = state.lapseCount;
+                else dbUpdate.last_review = state.lastReview;
+
+                var q = supabaseClient.from('words').update(dbUpdate)
+                    .eq('id', wordId)
+                    .eq('review_count', curReviewCount);
+                if (curNextReview === null || curNextReview === undefined) q = q.is('next_review', null);
+                else q = q.eq('next_review', curNextReview);
+
+                var updated = false;
+                try {
+                    var res = await q.select('id');
+                    if (res.error) throw res.error;
+                    updated = res.data && res.data.length > 0;
+                } catch (e) {
+                    console.warn('数据库写入失败', e);
+                    showToast('⚠️ 记录保存失败，请检查网络');
+                    return;
+                }
+                if (updated) return; // 写入成功
+
+                // 冲突：别的设备已推进 → 拉最新状态重算，下一轮用最新旧值再试（不覆盖对方进度）
+                var fresh = null;
+                try {
+                    var fr = await supabaseClient.from('words').select('*').eq('id', wordId).single();
+                    if (!fr.error && fr.data) fresh = fr.data;
+                } catch (e) { /* 拉取失败则放弃 */ }
+                if (!fresh) { showToast('⚠️ 记录保存失败，请检查网络'); return; }
+
+                curReviewCount = fresh.review_count || 0;
+                curNextReview = fresh.next_review;
+                var today = localDateStr();
+                state = (kind === 'forgot')
+                    ? computeForgotState(fresh, today)
+                    : computeReviewedState(fresh, today);
+            }
+            // 3 次仍冲突（多设备同时高频操作，极罕见）→ 放弃本轮，避免覆盖
+            showToast('⚠️ 记录保存失败，请检查网络');
         }
 
         async function deleteWordFromDB(id) {
@@ -2292,60 +2380,26 @@
             markedThisSession[word.id] = true;
 
             var today = localDateStr();
-            var level = word.review_count || 0; // 现处阶段（review_count 语义升级为"阶段级别"）
+            var oldReviewCount = word.review_count || 0; // 乐观锁旧值：写库时据此判断有没有被别的设备改过
+            var oldNextReview = word.next_review;        // 乐观锁旧值
+            var st = computeReviewedState(word, today);   // 规则A/C：升1级 / 逾期降级 + 下次间隔
 
-            // 逾期天数 = 今天 - next_review（未排期/未来日期按 0 算）
-            var overdue = 0;
-            if (word.next_review) {
-                var nd = Date.parse(word.next_review + 'T00:00:00Z');
-                var td = Date.parse(today + 'T00:00:00Z');
-                if (!isNaN(nd) && !isNaN(td)) {
-                    overdue = Math.floor((td - nd) / 86400000);
-                    if (overdue < 0) overdue = 0;
-                }
-            }
-            var planned = REVIEW_INTERVALS[Math.min(level, REVIEW_INTERVALS.length - 1)];
-
-            var newLevel;
-            if (overdue > planned * 2) {
-                // 规则C：逾期超计划间隔 2 倍 → 基本忘了 → 降 2 级再排期（拖得越久越说明没记住）
-                newLevel = Math.max(0, level - 2);
-            } else if (overdue > planned) {
-                // 规则C：逾期 1~2 倍 → 半遗忘 → 级别不变，下次仍用原间隔
-                newLevel = level;
-            } else {
-                // 规则A：按期完成 → 升 1 级
-                newLevel = level + 1;
-            }
-
-            // 下次间隔查表：正常/半遗忘用复习前级别（节奏与旧版一致：新词学完次日再来）；
-            // 降级情形用降级后的级别（短间隔，把"忘了"的词尽早排回来）
-            var idxLevel = (newLevel < level) ? newLevel : level;
-            var interval = REVIEW_INTERVALS[Math.min(idxLevel, REVIEW_INTERVALS.length - 1)];
-            var nextDate = new Date();
-            nextDate.setDate(nextDate.getDate() + interval);
-            var nextReview = localDateStr(nextDate);
-
-            word.last_review = today;
-            word.review_count = newLevel;
-            word.next_review = nextReview;
+            word.last_review = st.lastReview;
+            word.review_count = st.reviewCount;
+            word.next_review = st.nextReview;
 
             // 同步到本地缓存
             for (var i = 0; i < words.length; i++) {
                 if (words[i].id === word.id) {
-                    words[i].last_review = today;
-                    words[i].review_count = newLevel;
-                    words[i].next_review = nextReview;
+                    words[i].last_review = st.lastReview;
+                    words[i].review_count = st.reviewCount;
+                    words[i].next_review = st.nextReview;
                     break;
                 }
             }
 
-            // 写入数据库（失败自动重试1次，仍失败提示）
-            updateWordInDBWithRetry(word.id, {
-                lastReview: today,
-                reviewCount: newLevel,
-                nextReview: nextReview
-            }, '⚠️ 复习记录保存失败，请检查网络');
+            // 写库（乐观锁防并发覆盖，见 saveReviewGuarded）
+            saveReviewGuarded(word.id, 'reviewed', st, oldReviewCount, oldNextReview);
         }
 
         // ==================== 复习进度存档（C1：中断后可继续）====================
@@ -3077,20 +3131,22 @@
             // 数据层（艾宾浩斯规则B）：级别回退（最多降3级）+ 忘记次数+1，next_review=今天 → 近期必出
             // （不标记已复习、本场间隔不延长；降级后下次复习从低级别重新爬）
             var today = localDateStr();
-            var lvl = Math.max(0, (word.review_count || 0) - 3);
-            var lapses = (word.lapse_count || 0) + 1;
-            word.next_review = today;
-            word.review_count = lvl;
-            word.lapse_count = lapses;
+            var oldReviewCount = word.review_count || 0; // 乐观锁旧值
+            var oldNextReview = word.next_review;        // 乐观锁旧值
+            var st = computeForgotState(word, today);
+            word.next_review = st.nextReview;
+            word.review_count = st.reviewCount;
+            word.lapse_count = st.lapseCount;
             for (var i = 0; i < words.length; i++) {
                 if (words[i].id === word.id) {
-                    words[i].next_review = today;
-                    words[i].review_count = lvl;
-                    words[i].lapse_count = lapses;
+                    words[i].next_review = st.nextReview;
+                    words[i].review_count = st.reviewCount;
+                    words[i].lapse_count = st.lapseCount;
                     break;
                 }
             }
-            updateWordInDBWithRetry(word.id, { nextReview: today, reviewCount: lvl, lapseCount: lapses }, '⚠️ 记录保存失败，请检查网络');
+            // 写库（乐观锁防并发覆盖）
+            saveReviewGuarded(word.id, 'forgot', st, oldReviewCount, oldNextReview);
 
             // 原地直接显示该词释义（不走 toggleMeaning，避免被误标记为已复习）
             meaningVisible = true;
