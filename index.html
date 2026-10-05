@@ -2439,6 +2439,8 @@
         // 按「复习来源」分槽位：智能复习 / 每个日期各一槽，互不覆盖（最多保留5个槽）
         var STUDY_PROGRESS_KEY = 'vocab_study_progress';
         var STUDY_PROGRESS_MAX_SLOTS = 5;
+        var TOMBSTONE_TTL_MS = 30 * 24 * 3600 * 1000;   // 完成墓碑最多保留30天（本地与云端一致）
+        var LOCAL_ONLY_UPLOAD_MS = 24 * 3600 * 1000;    // 「本地独有」仅限24小时内可上传，避免陈旧断点复活
         var studyMeta = { mode: 'smart', dateKey: '' }; // 本场复习的来源
         var studySessionOpen = false;   // 本场是否进行中（完成后关闭，防止完成页/退出后再写档）
         var pendingStartState = null;   // 「继续上次」弹窗打开期间暂存的启动参数
@@ -2446,22 +2448,49 @@
         function studySlotKey(meta) {
             return meta && meta.mode === 'date' ? 'date:' + (meta.dateKey || '') : 'smart';
         }
+        function emptyProgressStore() { return { version: 1, sessions: {}, tombstones: {} }; }
         function readProgressStore() {
             try {
                 var raw = localStorage.getItem(STUDY_PROGRESS_KEY);
-                if (!raw) return { version: 1, sessions: {} };
+                if (!raw) return emptyProgressStore();
                 var s = JSON.parse(raw);
-                if (!s || typeof s !== 'object' || !s.sessions || typeof s.sessions !== 'object') return { version: 1, sessions: {} };
+                if (!s || typeof s !== 'object' || !s.sessions || typeof s.sessions !== 'object') return emptyProgressStore();
+                if (!s.tombstones || typeof s.tombstones !== 'object') s.tombstones = {}; // 兼容没有墓碑字段的旧存档
                 return s;
-            } catch (e) { return { version: 1, sessions: {} }; }
+            } catch (e) { return emptyProgressStore(); }
         }
         function writeProgressStore(s) {
             try { localStorage.setItem(STUDY_PROGRESS_KEY, JSON.stringify(s)); } catch (e) {}
+        }
+        // 完成墓碑：值 = 该槽位被「复习完成 / 主动作废」的时间戳。
+        // 为什么需要它：跨设备同步只能 upsert 自己那一份，删不掉别的设备里的旧副本；
+        // 有了墓碑，其他设备合并时就能判断「这个断点已经在别处结束了」，
+        // 从而删掉自己手里那份陈旧档，而不是把它当成新断点又复活一次。
+        function isTombstonePayload(p) {
+            return !!(p && p.tombstone === true && typeof p.savedAt === 'number');
         }
         function progressPayloadValid(p) {
             return !!(p && p.version === 1 && Array.isArray(p.ids) && p.ids.length > 0 &&
                 typeof p.index === 'number' && typeof p.savedAt === 'number' &&
                 (Date.now() - p.savedAt) <= 7 * 24 * 3600 * 1000); // 超过7天视为陈旧
+        }
+        // 本地剪枝：真档最多保留最近 N 个；墓碑不占档位，只按时间上限回收
+        function pruneLocalProgressStore(s) {
+            var keys = Object.keys(s.sessions);
+            if (keys.length > STUDY_PROGRESS_MAX_SLOTS) {
+                keys.sort(function(a, b) { return (s.sessions[b].savedAt || 0) - (s.sessions[a].savedAt || 0); });
+                for (var i = STUDY_PROGRESS_MAX_SLOTS; i < keys.length; i++) delete s.sessions[keys[i]];
+            }
+            var now = Date.now();
+            var tk = Object.keys(s.tombstones);
+            for (var j = 0; j < tk.length; j++) {
+                if (now - (s.tombstones[tk[j]] || 0) > TOMBSTONE_TTL_MS) delete s.tombstones[tk[j]];
+            }
+            var keep = Object.keys(s.tombstones); // 兜底：墓碑数量上限，防止极端情况无限增长
+            if (keep.length > 20) {
+                keep.sort(function(a, b) { return (s.tombstones[a] || 0) - (s.tombstones[b] || 0); });
+                for (var m = 0; m < keep.length - 20; m++) delete s.tombstones[keep[m]];
+            }
         }
         function loadStudyProgress(meta) {
             var s = readProgressStore();
@@ -2480,8 +2509,9 @@
             var key = studySlotKey(meta);
             var s = readProgressStore();
             delete s.sessions[key];
+            s.tombstones[key] = Date.now(); // 留完成墓碑：别的设备才知道这个断点已经结束了
             writeProgressStore(s);
-            pushStudyProgressSlot(key); // 本地已无此槽 → 云端同步删除
+            pushStudyProgressSlot(key); // 推墓碑（而不是直接删行），跨设备才能一起清掉
         }
 
         // ---------------- 断点存档跨设备同步（localStorage=即时缓存，Supabase=手机/电脑共享） ----------------
@@ -2489,29 +2519,69 @@
         var pendingPushSlots = {};
         var lastMergeAt = 0;
 
-        function deleteRemoteSlotRaw(slotKey) {
+        // 删除云端某槽（带重试：完成/作废时的删除不能静默丢失）
+        function deleteRemoteSlotRaw(slotKey, attempt) {
             if (!supabaseClient || !currentUser) return;
+            attempt = attempt || 0;
             try {
                 var req = supabaseClient.from('study_progress').delete()
                     .eq('user_id', currentUser.id).eq('slot_key', slotKey);
-                if (req && typeof req.then === 'function') req.then(function() {}, function() {});
+                if (req && typeof req.then === 'function') {
+                    var retry = function() {
+                        if (attempt >= 2) return;
+                        setTimeout(function() { deleteRemoteSlotRaw(slotKey, attempt + 1); }, 1500 * (attempt + 1));
+                    };
+                    req.then(function(res) { if (res && res.error) retry(); }, retry);
+                }
             } catch (e) {}
         }
-        // 把本地某槽推上云端；本地没有该槽 = 云端删除该槽
+        // 同一槽位的推送串行化：保证「先清档、再建档」这类连续请求按顺序到达服务端，
+        // 不会因为乱序把刚开始的新档删掉、或把刚清掉的旧档写回去。
+        var slotPushChain = {};
+        // 把本地某槽的状态推到云端：有档→推档；无档但有墓碑→推墓碑；两者都无→删掉云端行
         function pushStudyProgressSlot(slotKey) {
             if (!supabaseClient || !currentUser) return;
-            try {
-                var store = readProgressStore();
-                var p = store.sessions[slotKey];
-                if (!p) { deleteRemoteSlotRaw(slotKey); return; }
-                var req = supabaseClient.from('study_progress').upsert({
-                    user_id: currentUser.id,
-                    slot_key: slotKey,
-                    payload: p,
-                    updated_at: new Date().toISOString()
-                });
-                if (req && typeof req.then === 'function') req.then(function() {}, function() {});
-            } catch (e) {}
+            var prev = slotPushChain[slotKey] || Promise.resolve();
+            slotPushChain[slotKey] = prev.then(function() {
+                return runSlotPushOnce(slotKey);
+            }).catch(function() {});
+        }
+        // 真正执行一次推送（执行时才读本地，保证推上去的是最新状态）
+        function runSlotPushOnce(slotKey) {
+            return new Promise(function(resolve) {
+                var done = false;
+                var finish = function() { if (done) return; done = true; resolve(); };
+                setTimeout(finish, 10000); // 兜底：请求悬置也不能卡死后续推送
+                try {
+                    var store = readProgressStore();
+                    var p = store.sessions[slotKey];
+                    if (p) {
+                        var req = supabaseClient.from('study_progress').upsert({
+                            user_id: currentUser.id,
+                            slot_key: slotKey,
+                            payload: p,
+                            updated_at: new Date().toISOString()
+                        });
+                        if (req && typeof req.then === 'function') { req.then(finish, finish); return; }
+                        finish();
+                        return;
+                    }
+                    var ts = (store.tombstones || {})[slotKey];
+                    if (ts) { // 本地没有档但留有墓碑 → 推墓碑，其他设备据此清掉自己的旧副本
+                        var req2 = supabaseClient.from('study_progress').upsert({
+                            user_id: currentUser.id,
+                            slot_key: slotKey,
+                            payload: { version: 1, tombstone: true, savedAt: ts },
+                            updated_at: new Date().toISOString()
+                        });
+                        if (req2 && typeof req2.then === 'function') { req2.then(finish, finish); return; }
+                        finish();
+                        return;
+                    }
+                    deleteRemoteSlotRaw(slotKey); // 本地既无档也无墓碑 → 云端也不该留着
+                    finish();
+                } catch (e) { finish(); }
+            });
         }
         // 写档频繁（每切一词一次）→ 节流600ms合并推送；退出/关页面时 flush 立即推
         function schedulePushStudyProgress(slotKey) {
@@ -2526,52 +2596,89 @@
             for (var i = 0; i < keys.length; i++) pushStudyProgressSlot(keys[i]);
         }
         // 进复习前：拉云端全部断点 → 与本地逐槽合并（保存时间新者胜）
-        // 云端新→覆盖本地；本地新→回传云端；本地独有（离线产生的档）→上传；云端坏档→删除
+        // 云端墓碑→作废本地旧档；云端新→覆盖本地；本地新→回传云端；本地独有→限时上传；云端坏档→删除
         async function mergeStudyProgressFromDB() {
-            if (!supabaseClient || !currentUser) return;
-            if (Date.now() - lastMergeAt < 4000) return; // 防连着触发两次
+            if (!supabaseClient || !currentUser) return { cleared: 0 };
+            if (Date.now() - lastMergeAt < 4000) return { cleared: 0 }; // 防连着触发两次
             lastMergeAt = Date.now();
+            var cleared = 0;
+            var stale = 0;
             try {
                 var res = await withTimeout(supabaseClient.from('study_progress')
                     .select('slot_key, payload').eq('user_id', currentUser.id), 8000, '断点同步超时');
-                if (!res || res.error || !Array.isArray(res.data)) return;
+                if (!res || res.error || !Array.isArray(res.data)) return { cleared: 0 };
 
                 var store = readProgressStore();
-                // 本地先剪枝（与写档同规则，最多5槽），避免把马上要淘汰的槽推上去
-                var lk = Object.keys(store.sessions);
-                if (lk.length > STUDY_PROGRESS_MAX_SLOTS) {
-                    lk.sort(function(a, b) { return (store.sessions[b].savedAt || 0) - (store.sessions[a].savedAt || 0); });
-                    for (var t = STUDY_PROGRESS_MAX_SLOTS; t < lk.length; t++) delete store.sessions[lk[t]];
-                }
+                pruneLocalProgressStore(store); // 与写档同规则先剪枝，避免把马上要淘汰的槽推上去
 
                 var remoteKeys = {};
                 var validRows = [];
+                var now = Date.now();
                 for (var i = 0; i < res.data.length; i++) {
                     var row = res.data[i];
+                    var key = row.slot_key;
                     var rp = row.payload;
-                    if (!progressPayloadValid(rp)) { // 云端坏档/过期档 → 删
-                        deleteRemoteSlotRaw(row.slot_key);
+                    remoteKeys[key] = true;
+
+                    // ① 云端是「完成墓碑」：这里决定本地这份断点还要不要 —— 防止旧断点复活的关键
+                    if (isTombstonePayload(rp)) {
+                        var lp = store.sessions[key];
+                        if (!store.tombstones[key] || rp.savedAt > store.tombstones[key]) store.tombstones[key] = rp.savedAt;
+                        if (lp) {
+                            if ((lp.savedAt || 0) > (store.tombstones[key] || 0)) {
+                                pushStudyProgressSlot(key); // 本地档比墓碑新（完成之后又开了一轮）→ 以本地为准
+                            } else {
+                                delete store.sessions[key]; // 这份旧档已在别的设备完成 → 本机作废
+                                cleared++;
+                            }
+                        }
+                        if (now - rp.savedAt > TOMBSTONE_TTL_MS) deleteRemoteSlotRaw(key); // 墓碑过期回收
                         continue;
                     }
-                    remoteKeys[row.slot_key] = true;
+                    if (!progressPayloadValid(rp)) { // 云端坏档/过期档 → 删
+                        deleteRemoteSlotRaw(key);
+                        continue;
+                    }
                     validRows.push(row);
-                    var lp = store.sessions[row.slot_key];
-                    if (!lp) {
-                        store.sessions[row.slot_key] = rp;               // 云端有本地无 → 拉下来（其他设备的断点）
-                    } else if ((rp.savedAt || 0) > (lp.savedAt || 0)) {
-                        store.sessions[row.slot_key] = rp;               // 云端更新 → 覆盖本地
-                    } else if ((lp.savedAt || 0) > (rp.savedAt || 0)) {
-                        pushStudyProgressSlot(row.slot_key);             // 本地更新 → 推上去
+                    var lp2 = store.sessions[key];
+                    if (!lp2) {
+                        if ((store.tombstones[key] || 0) > (rp.savedAt || 0)) {
+                            pushStudyProgressSlot(key);  // 本地墓碑比云端档新 → 别把已完成的旧档拉回来
+                        } else {
+                            store.sessions[key] = rp;    // 云端有本地无 → 拉下来（其他设备的断点）
+                            if ((store.tombstones[key] || 0) < (rp.savedAt || 0)) delete store.tombstones[key];
+                        }
+                    } else if ((rp.savedAt || 0) > (lp2.savedAt || 0)) {
+                        store.sessions[key] = rp;        // 云端更新 → 覆盖本地
+                        if ((store.tombstones[key] || 0) < (rp.savedAt || 0)) delete store.tombstones[key];
+                    } else if ((lp2.savedAt || 0) > (rp.savedAt || 0)) {
+                        pushStudyProgressSlot(key);      // 本地更新 → 推上去
                     }
                 }
-                // 本地独有（本机离线时产生的档、或云端还没建过）→ 上传
+                // ② 本地独有（服务端完全没有这个槽）：可能是离线产生的档，也可能是「别处已经结束、
+                //    但本机还没收到通知」的残留。只有24小时内的档才继续上传（真正的跨设备接力都在这个
+                //    窗口内）；更旧的本地档直接作废并留墓碑，避免很久没打开的设备又把陈旧断点弹出来。
                 var nowLocal = Object.keys(store.sessions);
                 for (var j = 0; j < nowLocal.length; j++) {
-                    if (!remoteKeys[nowLocal[j]]) pushStudyProgressSlot(nowLocal[j]);
+                    var kLocal = nowLocal[j];
+                    if (remoteKeys[kLocal]) continue;
+                    if (now - (store.sessions[kLocal].savedAt || 0) <= LOCAL_ONLY_UPLOAD_MS) {
+                        pushStudyProgressSlot(kLocal);   // 新鲜档 → 上传（跨设备接力）
+                    } else {
+                        delete store.sessions[kLocal];   // 陈旧残留 → 作废（队列里的未复习词仍是到期状态，不会丢）
+                        store.tombstones[kLocal] = now;
+                        pushStudyProgressSlot(kLocal);   // 推送墓碑，其他设备也会清掉自己那份
+                        stale++;
+                    }
+                }
+                // ③ 本地有墓碑、云端却没这一行（完成时离线 / 删除失败）→ 补推墓碑，让别的设备也能清掉旧档
+                var nowTomb = Object.keys(store.tombstones);
+                for (var t2 = 0; t2 < nowTomb.length; t2++) {
+                    if (!remoteKeys[nowTomb[t2]]) pushStudyProgressSlot(nowTomb[t2]);
                 }
                 writeProgressStore(store);
 
-                // 云端超5槽清理（按保存时间只留最近的）
+                // 云端超5槽清理（按保存时间只留最近的；墓碑行不占档位）
                 if (validRows.length > STUDY_PROGRESS_MAX_SLOTS) {
                     validRows.sort(function(a, b) {
                         return ((b.payload && b.payload.savedAt) || 0) - ((a.payload && a.payload.savedAt) || 0);
@@ -2579,6 +2686,7 @@
                     for (var n = STUDY_PROGRESS_MAX_SLOTS; n < validRows.length; n++) deleteRemoteSlotRaw(validRows[n].slot_key);
                 }
             } catch (e) {} // 网络失败静默：退回本地档，不影响进入复习
+            return { cleared: cleared, stale: stale };
         }
         // 按当前场上状态写存档（切词 / 忘记了 / 退出复习页 / 关页面时都会调）
         function saveStudyProgress() {
@@ -2604,28 +2712,34 @@
                 };
                 var store = readProgressStore();
                 store.sessions[studySlotKey(studyMeta)] = payload;
-                var keys = Object.keys(store.sessions);
-                if (keys.length > STUDY_PROGRESS_MAX_SLOTS) { // 槽位剪枝：按保存时间只留最近N个
-                    keys.sort(function(a, b) { return (store.sessions[b].savedAt || 0) - (store.sessions[a].savedAt || 0); });
-                    for (var i = STUDY_PROGRESS_MAX_SLOTS; i < keys.length; i++) delete store.sessions[keys[i]];
-                }
+                delete store.tombstones[studySlotKey(studyMeta)]; // 新一轮开始 → 该槽的完成墓碑作废
+                pruneLocalProgressStore(store); // 槽位剪枝：真档按保存时间只留最近N个
                 writeProgressStore(store);
                 schedulePushStudyProgress(studySlotKey(studyMeta)); // 节流推上云端（跨设备同步）
             } catch (e) {}
         }
-        // 用存档重建队列：过滤已被删除的词，按 currentId 精确定位断点（找不到退回 index）
+        // 用存档重建队列：过滤已被删除的词、以及「今天已经推进过间隔」的词，按 currentId 精确定位断点
         function rebuildFromProgress(p) {
             var byId = {};
             for (var i = 0; i < words.length; i++) byId[words[i].id] = words[i];
+            var today = localDateStr();
             var list = [];
-            for (var j = 0; j < p.ids.length; j++) { if (byId[p.ids[j]]) list.push(byId[p.ids[j]]); }
-            if (list.length === 0) return { valid: false };
+            var doneToday = 0; // 今天已经推进过间隔、无需再练的词数
+            for (var j = 0; j < p.ids.length; j++) {
+                var w = byId[p.ids[j]];
+                if (!w) continue; // 词已被删除 → 丢掉
+                // 今天已经推进过间隔的词（例如已在电脑上复习完）不再留在队列里：
+                // 否则恢复旧断点后会在同一天把它的间隔再推进一次
+                if (w.last_review === today && w.next_review && w.next_review > today) { doneToday++; continue; }
+                list.push(w);
+            }
+            if (list.length === 0) return { valid: false, doneToday: doneToday };
             var idx = -1;
             if (p.currentId) {
                 for (var k = 0; k < list.length; k++) { if (list[k].id === p.currentId) { idx = k; break; } }
             }
             if (idx < 0) idx = Math.min(Math.max(p.index || 0, 0), list.length - 1);
-            return { valid: true, list: list, index: idx };
+            return { valid: true, list: list, index: idx, doneToday: doneToday };
         }
 
         // ---------------- 「继续上次」弹窗 ----------------
@@ -2633,14 +2747,18 @@
             pendingStartState = { list: wordList, meta: meta, saved: saved, rebuilt: rebuilt };
             var cur = rebuilt.list[rebuilt.index];
             var when = '';
+            var ageText = '';
             try {
                 when = new Date(saved.savedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+                var ageH = Math.floor((Date.now() - saved.savedAt) / 3600000); // 让「这份断点多久没动过」一眼可见
+                if (ageH >= 24) ageText = '，已保存 ' + Math.floor(ageH / 24) + ' 天';
+                else if (ageH >= 1) ageText = '，已保存 ' + ageH + ' 小时';
             } catch (e) { when = ''; }
             var src = meta.mode === 'date' ? ('按日期复习 ' + (meta.dateKey || '')) : '智能复习';
             document.getElementById('resume-desc').textContent =
                 src + '断点：第 ' + (rebuilt.index + 1) + ' / ' + rebuilt.list.length + ' 个';
             document.getElementById('resume-extra').textContent =
-                (cur ? '当前单词：' + cur.word + '　' : '') + '（进度保存于 ' + when + '）';
+                (cur ? '当前单词：' + cur.word + '　' : '') + '（进度保存于 ' + when + ageText + '）';
             document.getElementById('resume-modal').classList.add('show');
         }
         function closeResumeDialog() {
@@ -2704,12 +2822,22 @@
                 openModal.classList.remove('show');
                 pendingStartState = null;
             }
-            await mergeStudyProgressFromDB(); // 跨设备：先拉取其他端（手机/电脑）存下的断点
+            var mergeInfo = await mergeStudyProgressFromDB(); // 跨设备：先拉取其他端（手机/电脑）存下的断点
+            var syncTips = [];
+            if (mergeInfo && mergeInfo.cleared > 0) syncTips.push('清理了 ' + mergeInfo.cleared + ' 个已在其他设备完成的旧断点');
+            if (mergeInfo && mergeInfo.stale > 0) syncTips.push('作废了 ' + mergeInfo.stale + ' 份过期的本地断点');
             var saved = loadStudyProgress(meta);
             if (saved) {
                 var rebuilt = rebuildFromProgress(saved);
-                if (rebuilt.valid) { showResumeDialog(saved, rebuilt, wordList, meta); return; } // 问用户：继续 or 重来
-                clearStudyProgress(meta); // 队列里的词全被删了 → 存档作废
+                if (rebuilt.valid) { // 问用户：继续 or 重来
+                    if (rebuilt.doneToday > 0) syncTips.push('跳过 ' + rebuilt.doneToday + ' 个今天已复习的词');
+                    if (syncTips.length) showToast(syncTips.join('，'));
+                    showResumeDialog(saved, rebuilt, wordList, meta);
+                    return;
+                }
+                if (rebuilt.doneToday > 0) syncTips.push('断点里的单词今天都已复习过');
+                if (syncTips.length) showToast(syncTips.join('，'));
+                clearStudyProgress(meta); // 队列里的词全被删了 / 今天都复习完了 → 存档作废
             }
             if (!wordList || wordList.length === 0) { // 到期词为空且无可继续的断点
                 if (meta.mode !== 'date') showToast('今天没有需要复习的单词，太棒了！');
