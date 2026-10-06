@@ -3289,12 +3289,40 @@
         }
 
         // 展开后的详细内容（今日已复习列表专用）
+        // 数据形状（写入见 index.html:2014，读取见 index.html:3866-3869）：
+        //   synonyms    → 字符串数组
+        //   distinguish → { word, meaning } 对象数组
+        //   root_words  → { word, meaning } 对象数组
+        // 两者格式不同，必须分开格式化；直接 String(对象) 会变成 "[object Object]"。
+        function summaryDetailText(v) {
+            if (v === null || v === undefined) return '';
+            if (typeof v === 'string' || typeof v === 'number') return String(v).trim();
+            if (typeof v === 'object') {
+                var dWord = (v.word || v.name || '').toString().trim();
+                var dMeaning = (v.meaning || v.def || '').toString().trim();
+                if (dWord && dMeaning) return dWord + ' — ' + dMeaning;
+                return dWord || dMeaning; // 只有一半也算有内容；两半都空 → ''（当脏数据丢掉）
+            }
+            return String(v).trim();
+        }
+
         function buildSummaryDetail(w) {
             var html = '';
-            function addRow(label, arr) {
-                if (!arr || !arr.length) return;
+            // 非数组的脏数据（单个字符串/对象）当成一条处理，避免被按字符拆开
+            function asList(v) {
+                if (v === null || v === undefined) return [];
+                if (Array.isArray(v)) return v;
+                return [v];
+            }
+            // 一条有效内容都没有 → 整行不渲染（"没有就不显示，有才显示"）
+            function addRow(label, raw) {
+                var arr = asList(raw);
                 var vals = [];
-                for (var i = 0; i < arr.length; i++) vals.push(escapeHtml(String(arr[i])));
+                for (var i = 0; i < arr.length; i++) {
+                    var text = summaryDetailText(arr[i]);
+                    if (text) vals.push(escapeHtml(text));
+                }
+                if (!vals.length) return;
                 html += '<div class="summary-detail-row">' +
                             '<span class="summary-extra-label">' + label + '</span>' +
                             '<span class="summary-extra-value">' + vals.join(' · ') + '</span>' +
