@@ -1908,10 +1908,22 @@
                     '<span class="meaning-text">' + escapeHtml(line.substring(catMatch[0].length)) + '</span>';
             }
             // 英文词性（必须带点才高亮，避免误伤普通英文）：v. n. vt. vi. adj. adv. prep. conj. pron. num. art. int. abbr. pl. aux.
-            var posMatch = line.match(/^(vt\.|vi\.|n\.|v\.|adj\.|adv\.|prep\.|conj\.|pron\.|num\.|art\.|int\.|abbr\.|pl\.|aux\.)[ 　]+/i);
-            if (posMatch) {
-                return '<span class="pos-tag pos-blue">' + escapeHtml(posMatch[1]) + '</span>' +
-                    '<span class="meaning-text">' + escapeHtml(line.substring(posMatch[0].length)) + '</span>';
+            // 兼容四种写法：`v. 释义`（带空格）、`v.释义`（紧贴）、`v./n. 释义`（多词性连写）、`v.: 释义`
+            var posLine = line.replace(/^([A-Za-z]{1,4})．/, '$1.'); // 全角句点归一化（中文输入法易打成 v．）
+            var posFirst = posLine.match(/^(vt\.|vi\.|n\.|v\.|adj\.|adv\.|prep\.|conj\.|pron\.|num\.|art\.|int\.|abbr\.|pl\.|aux\.)/i);
+            if (posFirst) {
+                var posTag = posFirst[1];
+                var posRest = posLine.substring(posFirst[0].length);
+                // 多词性连写：v./n.、adj.&adv.（连接符两侧可有空格）
+                while (true) {
+                    var posMore = posRest.match(/^[ 　]*[\/／&＆][ 　]*(vt\.|vi\.|n\.|v\.|adj\.|adv\.|prep\.|conj\.|pron\.|num\.|art\.|int\.|abbr\.|pl\.|aux\.)/i);
+                    if (!posMore) break;
+                    posTag += posMore[0].replace(/[ 　]/g, '');
+                    posRest = posRest.substring(posMore[0].length);
+                }
+                posRest = posRest.replace(/^[ 　]*[:：]?[ 　]*/, ''); // 词性后面的冒号/空格一并当分隔符吃掉
+                return '<span class="pos-tag pos-blue">' + escapeHtml(posTag) + '</span>' +
+                    '<span class="meaning-text">' + escapeHtml(posRest) + '</span>';
             }
             // 无词性行：第一格留空保持列对齐
             return '<span class="meaning-empty-cell"></span>' +
