@@ -437,6 +437,26 @@
         }
         .summary-row.open .summary-meaning { display: grid; }
 
+        /* ====== 统计页：今日已复习列表（复用上面的 .summary-* 行样式）====== */
+        .today-review-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .today-review-title .btn { margin-left: auto; flex: none; }
+        .today-review-list { max-height: 62vh; overflow-y: auto; }
+        .today-review-list .empty-state { padding: 20px 10px; }
+        /* 展开后的详细内容：横跨释义网格两列 */
+        .summary-detail {
+            grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px;
+            margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);
+        }
+        .summary-detail-row { display: flex; gap: 8px; font-size: 13px; line-height: 1.7; }
+        .summary-extra-label { flex: none; color: #999; }
+        .summary-extra-value { color: var(--text-light); overflow-wrap: anywhere; }
+        .summary-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+        /* 复习页 / 完成页的「今日已复习」快捷入口 */
+        .today-entry-card { cursor: pointer; }
+        .today-entry { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; color: var(--text); }
+        .today-entry-count { font-size: 13px; font-weight: 400; color: #999; }
+        .today-entry-arrow { margin-left: auto; color: #999; font-size: 20px; line-height: 1; }
+
         /* ====== 释义动态行编辑（导入页 + 编辑弹窗共用）====== */
         .meaning-lines { display: flex; flex-direction: column; gap: 8px; }
         .meaning-line { display: flex; gap: 8px; align-items: center; }
@@ -848,6 +868,14 @@
                         </div>
                     </div>
                 </div>
+                <!-- 快捷入口：复习完想再看一遍今天复习过的词 -->
+                <div class="card today-entry-card" onclick="goTodayReviewed()">
+                    <div class="today-entry">
+                        <span>📖 今日已复习的单词</span>
+                        <span class="today-entry-count" id="review-today-entry-count"></span>
+                        <span class="today-entry-arrow">›</span>
+                    </div>
+                </div>
                 <div id="date-review-section" class="card" style="display:none">
                     <div class="card-title">📅 选择日期复习</div>
                     <!-- 翻月导航：上一月 / 年月标题+本月词数 / 下一月 -->
@@ -875,6 +903,14 @@
                         <div class="stat-card"><div class="stat-number" id="stat-reviewed">0</div><div class="stat-label">已复习</div></div>
                         <div class="stat-card"><div class="stat-number" id="stat-today-review">0</div><div class="stat-label">今日待复习</div></div>
                     </div>
+                </div>
+                <!-- 今日已复习：点开可以回看今天复习过的所有单词（包含今天更早的场次）-->
+                <div class="card" id="today-review-card">
+                    <div class="card-title today-review-title">
+                        <span>📖 今日已复习的单词<span id="today-review-count"></span></span>
+                        <button type="button" class="btn btn-outline btn-sm" id="today-review-toggle" style="display:none" onclick="toggleAllSummaryRows('today-review-list', this)">全部展开</button>
+                    </div>
+                    <div id="today-review-list" class="complete-summary-list today-review-list"></div>
                 </div>
                 <div class="card">
                     <div class="card-title">📅 各日期单词数量</div>
@@ -972,7 +1008,12 @@
                         <div class="complete-summary-list" id="complete-summary-list"></div>
                     </div>
 
-                    <button class="btn btn-primary btn-lg" onclick="exitReview()" style="margin-top:36px">返回复习选择</button>
+                    <!-- 快捷入口：上面的列表只含本场，这里可以看今天所有场次复习过的词 -->
+                    <div style="margin-top:32px">
+                        <button type="button" class="btn btn-outline btn-sm" onclick="goTodayReviewed()">📖 查看今天全部已复习（含更早场次）</button>
+                    </div>
+
+                    <button class="btn btn-primary btn-lg" onclick="exitReview()" style="margin-top:16px">返回复习选择</button>
                 </div>
             </div>
         </div>
@@ -2239,6 +2280,7 @@
             const smartWords = getSmartReviewWords();
             document.getElementById('smart-count').textContent = smartWords.length + ' 个';
             document.getElementById('total-count').textContent = words.length + ' 个';
+            updateTodayEntryCounts(); // 「今日已复习」快捷入口上的数量
         }
 
         function getSmartReviewWords() {
@@ -3207,55 +3249,207 @@
             rowEl.classList.toggle('open');
         }
 
+        // 距下次复习天数（无排期 / 坏日期 → null）
+        function summaryDaysLeft(w, todayTs) {
+            if (!w.next_review) return null;
+            var d = Math.round((Date.parse(w.next_review + 'T00:00:00Z') - todayTs) / 86400000);
+            return isNaN(d) ? null : d;
+        }
+
+        // 右端文字：0 及以内 → 今天；无排期 → —
+        function summaryWhenText(days) {
+            if (days === null) return '—';
+            return days <= 0 ? '今天' : (days + ' 天后');
+        }
+
+        // 汇总行排序：①「忘记了」置顶 ②按天数从近到远（今天 → 1 天后 → 2 天后 …）③同天数按字母
+        function summarySortItems(items) {
+            items.sort(function(a, b) {
+                if (a.forgot !== b.forgot) return a.forgot ? -1 : 1;
+                var da = (a.days === null) ? 99999 : a.days;
+                var db = (b.days === null) ? 99999 : b.days;
+                if (da !== db) return da - db;
+                return String(a.word.word || '').toLowerCase().localeCompare(String(b.word.word || '').toLowerCase());
+            });
+            return items;
+        }
+
+        // 一行汇总：点击展开；detailed=true 时附上同义词/易混词/同词根与复习情况（今日已复习列表用）
+        function buildSummaryRow(w, forgot, whenText, detailed) {
+            return '<div class="summary-row" onclick="toggleSummaryRow(this)">' +
+                        '<div class="summary-main">' +
+                            '<span class="summary-word">' + escapeHtml(w.word) + '</span>' +
+                            (forgot ? '<span class="summary-forgot">忘记了</span>' : '') +
+                            '<span class="summary-when">' + whenText + '</span>' +
+                        '</div>' +
+                        '<div class="summary-meaning">' + renderMeaningLines(w.meaning) +
+                            (detailed ? buildSummaryDetail(w) : '') +
+                        '</div>' +
+                    '</div>';
+        }
+
+        // 展开后的详细内容（今日已复习列表专用）
+        function buildSummaryDetail(w) {
+            var html = '';
+            function addRow(label, arr) {
+                if (!arr || !arr.length) return;
+                var vals = [];
+                for (var i = 0; i < arr.length; i++) vals.push(escapeHtml(String(arr[i])));
+                html += '<div class="summary-detail-row">' +
+                            '<span class="summary-extra-label">' + label + '</span>' +
+                            '<span class="summary-extra-value">' + vals.join(' · ') + '</span>' +
+                        '</div>';
+            }
+            addRow('📝 同义词', w.synonyms);
+            addRow('⚠️ 易混词', w.distinguish);
+            addRow('🌱 同词根', w.root_words);
+
+            var meta = ['🔁 已复习 ' + (w.review_count || 0) + ' 次'];
+            if ((w.lapse_count || 0) > 0) meta.push('❌ 忘记 ' + w.lapse_count + ' 次');
+            if (w.date) meta.push('📅 录入 ' + w.date);
+            html += '<div class="summary-detail-row">' +
+                        '<span class="summary-extra-label">📌 记录</span>' +
+                        '<span class="summary-extra-value">' + escapeHtml(meta.join(' · ')) + '</span>' +
+                    '</div>';
+
+            html += '<div class="summary-actions">' +
+                        '<button type="button" class="btn btn-outline btn-sm" onclick="event.stopPropagation();speakSummaryRow(this)">🔉 发音</button>' +
+                    '</div>';
+            return '<div class="summary-detail">' + html + '</div>';
+        }
+
+        // 展开区里的「发音」：从本行读单词，避免把单词拼进 onclick 的引号里出错
+        function speakSummaryRow(btn) {
+            if (!btn || !btn.closest) return;
+            var row = btn.closest('.summary-row');
+            var wordEl = row ? row.querySelector('.summary-word') : null;
+            if (wordEl) { try { speakWord(wordEl.textContent); } catch (e) {} }
+        }
+
+        // 整卡「全部展开 / 全部收起」
+        function toggleAllSummaryRows(listId, btn) {
+            var listEl = document.getElementById(listId);
+            if (!listEl) return;
+            var toOpen = !(btn && btn.getAttribute('data-open') === '1');
+            listEl.querySelectorAll('.summary-row').forEach(function(row) {
+                if (toOpen) row.classList.add('open'); else row.classList.remove('open');
+            });
+            if (btn) {
+                btn.setAttribute('data-open', toOpen ? '1' : '0');
+                btn.textContent = toOpen ? '全部收起' : '全部展开';
+            }
+        }
+
+        // ====== 「今日忘记」日志：跨会话记住今天按过忘记的词（完成复习后到统计页回看时红标不丢）======
+        var FORGET_LOG_KEY = 'vocab_forgot_today';
+
+        function readForgetLog() {
+            var today = localDateStr();
+            try {
+                var raw = localStorage.getItem(FORGET_LOG_KEY);
+                var obj = raw ? JSON.parse(raw) : null;
+                if (obj && obj.date === today && Array.isArray(obj.ids)) return obj;
+            } catch (e) {}
+            return { date: today, ids: [] };
+        }
+
+        function markForgotToday(id) {
+            if (!id) return;
+            try {
+                var log = readForgetLog();
+                if (log.ids.indexOf(id) !== -1) return;
+                log.ids.push(id);
+                if (log.ids.length > 500) log.ids = log.ids.slice(-500); // 兜底：只留最近 500 条
+                localStorage.setItem(FORGET_LOG_KEY, JSON.stringify(log));
+            } catch (e) {}
+        }
+
         function renderCompleteSummary() {
             var wrapEl = document.getElementById('complete-summary');
             var listEl = document.getElementById('complete-summary-list');
             if (!wrapEl || !listEl) return;
 
-            // 先给每个词算出「是否忘记 + 距下次复习天数」，再排序：
-            // ①「忘记了」的词排最上面；② 其余按天数从近到远（今天 → 1 天后 → 2 天后 …）
+            // 本次复习的每个词：算「是否忘记 + 距下次复习天数」→ 忘记置顶、其余按天数从近到远
             var todayTs = Date.parse(localDateStr() + 'T00:00:00Z');
-            var items = studyWords.map(function(w) {
-                var days = null;
-                if (w.next_review) {
-                    var d = Math.round((Date.parse(w.next_review + 'T00:00:00Z') - todayTs) / 86400000);
-                    if (!isNaN(d)) days = d;
-                }
+            var items = summarySortItems(studyWords.map(function(w) {
                 return {
                     word: w,
                     forgot: (forgetCounts[w.id] || 0) > 0, // 本次复习中至少忘记过一次
-                    days: days
+                    days: summaryDaysLeft(w, todayTs)
                 };
-            });
+            }));
             if (!items.length) { wrapEl.style.display = 'none'; return; }
 
-            items.sort(function(a, b) {
-                if (a.forgot !== b.forgot) return a.forgot ? -1 : 1; // 忘记了的排最上
-                var da = (a.days === null) ? 99999 : a.days;
-                var db = (b.days === null) ? 99999 : b.days;
-                if (da !== db) return da - db; // 按天数升序：今天 → 1 天后 → 2 天后 …
-                // 天数相同时按字母排序，保证顺序稳定
-                return String(a.word.word || '').toLowerCase().localeCompare(String(b.word.word || '').toLowerCase());
-            });
-
-            var html = '';
-            items.forEach(function(it) {
-                var w = it.word;
-                // 右端：距下次复习还有几天（0 及以内 → 今天；无排期 → —）
-                var whenText = it.days === null ? '—' : (it.days <= 0 ? '今天' : (it.days + ' 天后'));
-                html += '<div class="summary-row" onclick="toggleSummaryRow(this)">' +
-                            '<div class="summary-main">' +
-                                '<span class="summary-word">' + escapeHtml(w.word) + '</span>' +
-                                (it.forgot ? '<span class="summary-forgot">忘记了</span>' : '') +
-                                '<span class="summary-when">' + whenText + '</span>' +
-                            '</div>' +
-                            '<div class="summary-meaning">' + renderMeaningLines(w.meaning) + '</div>' +
-                        '</div>';
-            });
-
-            listEl.innerHTML = html;
+            listEl.innerHTML = items.map(function(it) {
+                return buildSummaryRow(it.word, it.forgot, summaryWhenText(it.days), false);
+            }).join('');
             document.getElementById('complete-summary-count').textContent = '（' + items.length + ' 个）';
             wrapEl.style.display = '';
+        }
+
+        // ====== 统计页：今日已复习的单词（含今天更早的场次，点开看详细内容）======
+        function todayReviewedWords() {
+            var today = localDateStr();
+            return words.filter(function(w) { return w.last_review === today; });
+        }
+
+        // 复习页那条快捷入口上的数量
+        function updateTodayEntryCounts() {
+            var el = document.getElementById('review-today-entry-count');
+            if (!el) return;
+            el.textContent = '（' + todayReviewedWords().length + ' 个）';
+        }
+
+        function renderTodayReviewed() {
+            var listEl = document.getElementById('today-review-list');
+            var countEl = document.getElementById('today-review-count');
+            var toggleBtn = document.getElementById('today-review-toggle');
+            if (!listEl || !countEl) return;
+
+            updateTodayEntryCounts();
+
+            var todayTs = Date.parse(localDateStr() + 'T00:00:00Z');
+            var forgotIds = readForgetLog().ids; // 今天按过忘记的词（跨会话、跨场次）
+            var items = summarySortItems(todayReviewedWords().map(function(w) {
+                var days = summaryDaysLeft(w, todayTs);
+                return {
+                    word: w,
+                    // 忘记过的两种判定：① 今天按过忘记（日志里有）② 忘记后 next_review 还落在今天
+                    forgot: forgotIds.indexOf(w.id) !== -1 || (days !== null && days <= 0),
+                    days: days
+                };
+            }));
+
+            if (!items.length) {
+                listEl.innerHTML = '<div class="empty-state">' +
+                                        '<div class="empty-text">今天还没有复习记录</div>' +
+                                        '<button type="button" class="btn btn-outline btn-sm" style="margin-top:10px" onclick="goReviewPage()">去复习 ›</button>' +
+                                    '</div>';
+                countEl.textContent = '';
+                if (toggleBtn) toggleBtn.style.display = 'none';
+                return;
+            }
+
+            listEl.innerHTML = items.map(function(it) {
+                return buildSummaryRow(it.word, it.forgot, summaryWhenText(it.days), true);
+            }).join('');
+            countEl.textContent = '（' + items.length + ' 个）';
+            if (toggleBtn) {
+                toggleBtn.style.display = '';
+                toggleBtn.setAttribute('data-open', '0');
+                toggleBtn.textContent = '全部展开';
+            }
+        }
+
+        // 复习页 / 完成页的快捷入口 → 统计页的「今日已复习」卡片
+        function goTodayReviewed() {
+            showPage('stats', document.querySelector('.nav-btn[onclick*="stats"]'));
+            var card = document.getElementById('today-review-card');
+            if (card && card.scrollIntoView) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        function goReviewPage() {
+            showPage('review', document.querySelector('.nav-btn[onclick*="review"]'));
         }
 
         // ====== 复习完成页：今日复习数 / 忘记数 / 明天待复习数 ======
@@ -3298,6 +3492,7 @@
             var cnt = forgetCounts[word.id] || 0;
             if (cnt >= 3) return; // 已达3次上限，按钮已禁用
             forgetCounts[word.id] = cnt + 1;
+            markForgotToday(word.id); // 记进「今日忘记」日志：完成复习后到统计页回看时红标不丢
             forgetClicks++;
             pendingForgetId = word.id; // 离开该词时再移到队尾
 
@@ -3544,6 +3739,8 @@
             `).join('');
 
             document.getElementById('date-stats').innerHTML = statsHtml || '<div class="empty-state"><div class="empty-text">暂无数据</div></div>';
+
+            renderTodayReviewed(); // 今日已复习卡片（含今天更早的场次）
         }
 
         // ==================== 工具函数 ====================
