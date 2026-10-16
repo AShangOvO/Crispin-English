@@ -621,6 +621,8 @@
         }
         .stat-number { font-size: 32px; font-weight: bold; color: var(--primary); }
         .stat-label { font-size: 13px; color: var(--text-light); margin-top: 4px; }
+        /* 7：到期预测 */
+        .due-forecast { margin-top: 16px; text-align: center; font-size: 13px; color: var(--text-light); }
 
         .empty-state {
             text-align: center; padding: 48px 20px; color: var(--text-light);
@@ -972,6 +974,16 @@
                         <div class="stat-card"><div class="stat-number" id="stat-reviewed">0</div><div class="stat-label">已复习</div></div>
                         <div class="stat-card"><div class="stat-number" id="stat-today-review">0</div><div class="stat-label">今日待复习</div></div>
                     </div>
+                    <!-- 7：到期预测 -->
+                    <div class="due-forecast" id="due-forecast"></div>
+                </div>
+                <!-- 6：顽固词（忘记 ≥3 次）集中复习入口 -->
+                <div class="card" id="leech-card" style="display:none">
+                    <div class="card-title today-review-title">
+                        <span>🧱 顽固词（忘记≥3次）<span id="leech-count"></span></span>
+                        <button type="button" class="btn btn-primary btn-sm" onclick="startLeechReview()">集中复习</button>
+                    </div>
+                    <div id="leech-list" class="complete-summary-list today-review-list"></div>
                 </div>
                 <!-- 今日已复习：点开可以回看今天复习过的所有单词（包含今天更早的场次）-->
                 <div class="card" id="today-review-card">
@@ -1181,6 +1193,8 @@
         // 艾宾浩斯阶段间隔表（天）：L0 新学/忘记重学 → L8 稳固，间隔逐级递增
         // 骨架 = 艾宾浩斯遗忘曲线的日尺度离散化，越往后复习频率越低
         var REVIEW_INTERVALS = [1, 2, 4, 7, 15, 30, 60, 120, 240];
+        // 2b：间隔抖动随机源（可注入：测试时替换为固定值以断言具体日期）
+        var scheduleRandom = Math.random;
         var synonyms = [];
         var editSynonyms = [];
         var forgetCounts = {};   // 本次复习：单词id → 已重做次数（上限3）
@@ -1765,11 +1779,15 @@
             } else {
                 newLevel = level + 1;              // 规则A：按期 → 升1级
             }
-            var idxLevel = (newLevel < level) ? newLevel : level;
+            // 2a：顽固词减速——忘记次数越多，间隔越保守（最多下调 2 档；级别照常走，代表记忆强度）
+            var leechPenalty = Math.min(2, Math.floor((word.lapse_count || 0) / 2));
+            var idxLevel = (newLevel < level) ? newLevel : Math.max(0, level - leechPenalty);
             var interval = REVIEW_INTERVALS[Math.min(idxLevel, REVIEW_INTERVALS.length - 1)];
+            // 2b：间隔抖动 ±15%——同一批导入的词不会永远在同一天扎堆到期
+            interval = Math.max(1, Math.round(interval * (0.85 + scheduleRandom() * 0.3)));
             var nextDate = new Date();
             nextDate.setDate(nextDate.getDate() + interval);
-            return { lastReview: today, reviewCount: newLevel, nextReview: localDateStr(nextDate) };
+            return { lastReview: today, reviewCount: newLevel, nextReview: localDateStr(nextDate), intervalDays: interval };
         }
         // 忘记后的新状态（规则B：降3级 + 忘记次数+1，next_review=今天）
         function computeForgotState(word, today) {
@@ -1826,6 +1844,25 @@
             }
             // 3 次仍冲突（多设备同时高频操作，极罕见）→ 放弃本轮，避免覆盖
             showToast('⚠️ 记录保存失败，请检查网络');
+        }
+
+        // ====== 3：复习日志（逐次记录，供热力图/遗忘率分析使用）======
+        // fire-and-forget 上报：表未建 / 断网 / 出错都静默跳过，绝不影响复习主流程
+        function logReviewEvent(word, result, levelBefore, levelAfter, intervalDays, revealed) {
+            if (!supabaseClient || !currentUser || !word) return;
+            try {
+                var req = supabaseClient.from('review_log').insert([{
+                    user_id: currentUser.id,
+                    word_id: word.id,
+                    result: result,
+                    level_before: levelBefore === undefined ? null : levelBefore,
+                    level_after: levelAfter === undefined ? null : levelAfter,
+                    interval_days: intervalDays === undefined ? null : intervalDays,
+                    mode: (studyMeta && studyMeta.mode) || 'smart',
+                    revealed: revealed === undefined ? null : !!revealed
+                }]);
+                if (req && typeof req.then === 'function') req.then(function() {}, function() {});
+            } catch (e) { /* 静默：日志失败不影响任何功能 */ }
         }
 
         async function deleteWordFromDB(id) {
@@ -2700,12 +2737,19 @@
         // ==================== 学习功能 ====================
         // ====== 单个单词标记为已复习（方案A：离开/看释义时才标记）======
         var markedThisSession = {}; // 本次复习已标记的词，防止重复标记
+        var requeuedFresh = {};     // 1b：本场已经「当日二刷」过的新词（防止重复排队）
 
-        function markWordReviewed(word) {
+        function markWordReviewed(word, revealed) {
             if (!word || markedThisSession[word.id]) return;
             markedThisSession[word.id] = true;
 
             var today = localDateStr();
+            // 1a：同日防重复推进——今天已经推进过间隔的词（例如先在智能复习里通过了，
+            // 随后又用「按日期复习」看到它），本次只算练习：不升级、不写库。
+            // 判定口径与断点恢复 rebuildFromProgress 的跳过规则完全一致。
+            if (word.last_review === today && word.next_review && word.next_review > today) {
+                return;
+            }
             var oldReviewCount = word.review_count || 0; // 乐观锁旧值：写库时据此判断有没有被别的设备改过
             var oldNextReview = word.next_review;        // 乐观锁旧值
             var st = computeReviewedState(word, today);   // 规则A/C：升1级 / 逾期降级 + 下次间隔
@@ -2726,6 +2770,8 @@
 
             // 写库（乐观锁防并发覆盖，见 saveReviewGuarded）
             saveReviewGuarded(word.id, 'reviewed', st, oldReviewCount, oldNextReview);
+            // 3：写复习日志（练习模式在上面的守卫已提前返回，不会误记）
+            logReviewEvent(word, 'passed', oldReviewCount, st.reviewCount, st.intervalDays, revealed);
         }
 
         // ==================== 复习进度存档（C1：中断后可继续）====================
@@ -2739,7 +2785,9 @@
         var pendingStartState = null;   // 「继续上次」弹窗打开期间暂存的启动参数
 
         function studySlotKey(meta) {
-            return meta && meta.mode === 'date' ? 'date:' + (meta.dateKey || '') : 'smart';
+            if (meta && meta.mode === 'date') return 'date:' + (meta.dateKey || '');
+            if (meta && meta.mode === 'leech') return 'leech'; // 6：顽固词集中复习独立槽位，不覆盖智能复习断点
+            return 'smart';
         }
         function emptyProgressStore() { return { version: 1, sessions: {}, tombstones: {} }; }
         function readProgressStore() {
@@ -2989,6 +3037,8 @@
                 var cur = studyWords[idx];
                 var marked = [];
                 for (var k in markedThisSession) { if (markedThisSession[k]) marked.push(k); }
+                var requeued = []; // 1b：本场已二刷过的新词（恢复后不再重复排队）
+                for (var k3 in requeuedFresh) { if (requeuedFresh[k3]) requeued.push(k3); }
                 var fc = {};
                 for (var k2 in forgetCounts) { if (forgetCounts[k2]) fc[k2] = forgetCounts[k2]; }
                 var payload = {
@@ -3001,6 +3051,7 @@
                     forgetCounts: fc, forgetClicks: forgetClicks,
                     pendingForgetId: pendingForgetId,
                     markedIds: marked,                  // 本场已标记过的词（恢复后防重复标记）
+                    requeuedIds: requeued,              // 本场已二刷过的新词（旧版本存档缺此字段 → 按空处理）
                     savedAt: Date.now()
                 };
                 var store = readProgressStore();
@@ -3047,7 +3098,8 @@
                 if (ageH >= 24) ageText = '，已保存 ' + Math.floor(ageH / 24) + ' 天';
                 else if (ageH >= 1) ageText = '，已保存 ' + ageH + ' 小时';
             } catch (e) { when = ''; }
-            var src = meta.mode === 'date' ? ('按日期复习 ' + (meta.dateKey || '')) : '智能复习';
+            var src = meta.mode === 'date' ? ('按日期复习 ' + (meta.dateKey || ''))
+                    : (meta.mode === 'leech' ? '顽固词集中复习' : '智能复习');
             document.getElementById('resume-desc').textContent =
                 src + '断点：第 ' + (rebuilt.index + 1) + ' / ' + rebuilt.list.length + ' 个';
             document.getElementById('resume-extra').textContent =
@@ -3082,9 +3134,11 @@
             studyIndex = st.rebuilt.index;
             meaningVisible = false;
             markedThisSession = {};         // 恢复本场已标记集合 → 回看旧词不会重复标记、间隔不会双算
+            requeuedFresh = {};             // 1b：恢复「当日二刷」记录（旧存档无此字段 → 按空处理）
             var ids = {};
             for (var i = 0; i < studyWords.length; i++) ids[studyWords[i].id] = true;
             (st.saved.markedIds || []).forEach(function(id) { if (ids[id]) markedThisSession[id] = true; });
+            (st.saved.requeuedIds || []).forEach(function(id) { if (ids[id]) requeuedFresh[id] = true; });
             forgetCounts = {};              // 只保留仍在队列里的词的忘记次数（被删的词不留脏数据）
             var fcSrc = st.saved.forgetCounts || {};
             for (var k in fcSrc) { if (ids[k]) forgetCounts[k] = fcSrc[k]; }
@@ -3133,7 +3187,8 @@
                 clearStudyProgress(meta); // 队列里的词全被删了 / 今天都复习完了 → 存档作废
             }
             if (!wordList || wordList.length === 0) { // 到期词为空且无可继续的断点
-                if (meta.mode !== 'date') showToast('今天没有需要复习的单词，太棒了！');
+                if (meta.mode === 'smart') showToast('今天没有需要复习的单词，太棒了！');
+                else if (meta.mode === 'leech') showToast('没有需要集中复习的顽固词');
                 return;
             }
             await beginStudy(wordList, meta);
@@ -3146,6 +3201,7 @@
             studyIndex = 0;
             meaningVisible = false;
             markedThisSession = {}; // 重置本次已标记记录
+            requeuedFresh = {};     // 1b：重置本场「当日二刷」记录
             forgetCounts = {};      // 重置「忘记了」次数
             forgetClicks = 0;
             pendingForgetId = null; // 重置「已忘记待离开」状态
@@ -3318,7 +3374,7 @@
                 // 显示释义 = 认真看了这个词 → 标记为已复习
                 // 例外：已点「忘记了」的词不标记（否则会覆盖 next_review=今天 的锁定）
                 if (studyWords[studyIndex] && studyWords[studyIndex].id !== pendingForgetId) {
-                    markWordReviewed(studyWords[studyIndex]);
+                    markWordReviewed(studyWords[studyIndex], true); // revealed=true：看过释义才算"认识"
                 }
             } else {
                 concealMeaning();
@@ -3390,14 +3446,19 @@
                 return;
             }
 
+            // 1b：新词学习步——首刷（标记前级别为 0）通过后，当天再排到队尾见一次面。
+            // 二次见面时 markedThisSession 已置位 → 纯练习：不会重复推进调度、不会双重计数。
+            var levelBefore = word.review_count || 0;
+            markWordReviewed(word, meaningVisible); // meaningVisible：离开时是否看过释义（日志信号）
+            if (levelBefore === 0 && !requeuedFresh[word.id]) {
+                requeuedFresh[word.id] = true;
+                studyWords.push(word);
+            }
+
             if (studyIndex < studyWords.length - 1) {
-                // 离开当前词 → 标记已复习
-                markWordReviewed(word);
                 studyIndex++;
                 renderStudyWord();
             } else {
-                // 最后一个词也按了「下一个」→ 视为认识，标记并进入完成页
-                markWordReviewed(word);
                 showCompletePage();
             }
         }
@@ -3654,8 +3715,15 @@
             if (!wrapEl || !listEl) return;
 
             // 本次复习的每个词：算「是否忘记 + 距下次复习天数」→ 忘记置顶、其余按天数从近到远
+            // 1b：队列里同一词可能出现两次（新词当日二刷 / 忘记重排）→ 汇总先按 id 去重
+            var seenIds = {};
+            var uniqueWords = studyWords.filter(function(w) {
+                if (seenIds[w.id]) return false;
+                seenIds[w.id] = true;
+                return true;
+            });
             var todayTs = Date.parse(localDateStr() + 'T00:00:00Z');
-            var items = summarySortItems(studyWords.map(function(w) {
+            var items = summarySortItems(uniqueWords.map(function(w) {
                 return {
                     word: w,
                     forgot: (forgetCounts[w.id] || 0) > 0, // 本次复习中至少忘记过一次
@@ -3799,6 +3867,8 @@
             }
             // 写库（乐观锁防并发覆盖）
             saveReviewGuarded(word.id, 'forgot', st, oldReviewCount, oldNextReview);
+            logReviewEvent(word, 'forgot', oldReviewCount, st.reviewCount, null, null); // 3：写复习日志
+            requeuedFresh[word.id] = true; // 1b：忘记词已获得"队尾重来"的二次机会，不再触发新词二刷
 
             // 原地直接显示该词释义（不走 toggleMeaning，避免被误标记为已复习）
             meaningVisible = true;
@@ -3823,7 +3893,7 @@
             saveStudyProgress(); // 忘记状态已变化 → 更新断点存档
         }
 
-        // 离开当前词的统一处理：正常词→标记已复习；「忘记了」的词→移到队尾且不标记
+        // 离开当前词的统一处理：正常词→标记已复习（含新词当日二刷）；「忘记了」的词→移到队尾且不标记
         function leaveCurrentWord() {
             var word = studyWords[studyIndex];
             if (!word) return;
@@ -3832,7 +3902,12 @@
                 studyWords.push(word);
                 pendingForgetId = null;
             } else {
-                markWordReviewed(word);
+                var levelBefore = word.review_count || 0; // 1b：与 nextWord 一致的"新词首刷"判定
+                markWordReviewed(word, meaningVisible);
+                if (levelBefore === 0 && !requeuedFresh[word.id]) {
+                    requeuedFresh[word.id] = true;
+                    studyWords.push(word);
+                }
             }
         }
 
@@ -4027,7 +4102,51 @@
 
             document.getElementById('date-stats').innerHTML = statsHtml || '<div class="empty-state"><div class="empty-text">暂无数据</div></div>';
 
+            // 7：到期预测（明天精确到期数 / 未来 7 天到期总量）
+            var tmr = new Date(); tmr.setDate(tmr.getDate() + 1);
+            var tomorrowStr2 = localDateStr(tmr);
+            var d7 = new Date(); d7.setDate(d7.getDate() + 7);
+            var day7Str = localDateStr(d7);
+            var dueTomorrowExact = 0, dueNext7 = 0;
+            words.forEach(function(w) {
+                if (!w.next_review) return;
+                if (w.next_review === tomorrowStr2) dueTomorrowExact++;
+                if (w.next_review > today && w.next_review <= day7Str) dueNext7++;
+            });
+            var forecastEl = document.getElementById('due-forecast');
+            if (forecastEl) {
+                forecastEl.textContent = '📅 明天到期 ' + dueTomorrowExact + ' 个 · 未来 7 天共 ' + dueNext7 + ' 个';
+            }
+
+            renderLeechCard();     // 6：顽固词卡片
             renderTodayReviewed(); // 今日已复习卡片（含今天更早的场次）
+        }
+
+        // 6：顽固词卡片（lapse_count >= 3 的词，一键集中复习）
+        function renderLeechCard() {
+            var card = document.getElementById('leech-card');
+            var listEl = document.getElementById('leech-list');
+            var countEl = document.getElementById('leech-count');
+            if (!card || !listEl || !countEl) return;
+
+            var leeches = words.filter(function(w) { return (w.lapse_count || 0) >= 3; });
+            if (!leeches.length) { card.style.display = 'none'; return; }
+
+            leeches.sort(function(a, b) { return (b.lapse_count || 0) - (a.lapse_count || 0); });
+            countEl.textContent = '（' + leeches.length + ' 个）';
+
+            var todayTs = Date.parse(localDateStr() + 'T00:00:00Z');
+            listEl.innerHTML = leeches.map(function(w) {
+                return buildSummaryRow(w, true, summaryWhenText(summaryDaysLeft(w, todayTs)), false);
+            }).join('');
+            card.style.display = '';
+        }
+
+        // 6：一键开始顽固词集中复习（独立断点槽位，与智能复习互不覆盖）
+        function startLeechReview() {
+            var leeches = words.filter(function(w) { return (w.lapse_count || 0) >= 3; });
+            if (!leeches.length) { showToast('暂无顽固词'); return; }
+            startStudy(leeches, { mode: 'leech' });
         }
 
         // ==================== 工具函数 ====================
