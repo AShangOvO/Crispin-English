@@ -367,10 +367,34 @@
         .review-container { max-width: var(--w-read); margin: 0 auto; }
         .review-header {
             display: flex; justify-content: space-between;
-            align-items: center; margin-bottom: 24px;
+            align-items: center; margin-bottom: 14px;
         }
         .review-progress { font-size: 16px; color: var(--text-light); }
         .review-counter { font-weight: 600; color: var(--primary); }
+
+        /* ====== 18：复习进度条 + 剩余词数 ====== */
+        .review-progress-row {
+            display: flex; align-items: center; gap: 10px; margin-bottom: 20px;
+        }
+        .review-progress-track {
+            flex: 1; height: 6px; border-radius: 3px;
+            background: #E9EEF5; overflow: hidden;
+        }
+        .review-progress-fill {
+            height: 100%; width: 0%; border-radius: 3px;
+            background: linear-gradient(90deg, var(--primary), var(--secondary));
+            transition: width 0.3s ease;
+        }
+        .review-progress-left {
+            flex: none; min-width: 62px; text-align: right;
+            font-size: 12px; color: var(--text-light); white-space: nowrap;
+        }
+        /* 「忘记了」计数：徽章样式，比纯文字更醒目（18） */
+        .forget-badge {
+            display: none; margin-left: 8px; padding: 1px 8px;
+            background: #FFF1F0; color: var(--danger); border: 1px solid #FFCCC7;
+            border-radius: 10px; font-size: 12px; font-weight: 600; white-space: nowrap;
+        }
 
         .word-display {
             background: var(--card); border-radius: 16px; padding: 48px 32px;
@@ -970,8 +994,16 @@
                         <button class="btn btn-outline" onclick="exitReview()">← 返回</button>
                         <div class="review-progress">
                             <span class="review-counter" id="current-index">1</span> / <span id="total-words">0</span>
-                            <span id="forget-count" style="display:none;color:#FF4D4F;font-size:13px;margin-left:8px"></span>
+                            <span id="forget-count" class="forget-badge"></span>
                         </div>
+                    </div>
+                    <!-- 18：复习进度条 + 剩余词数（进度 = 进行到第几个 / 总数） -->
+                    <div class="review-progress-row">
+                        <div class="review-progress-track" id="progress-track" role="progressbar"
+                             aria-label="复习进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                            <div class="review-progress-fill" id="progress-fill"></div>
+                        </div>
+                        <span class="review-progress-left" id="progress-left-text"></span>
                     </div>
 
                     <div class="word-display" id="word-display" onclick="toggleMeaning()">
@@ -3127,6 +3159,22 @@
             renderStudyWord();
         }
 
+        // 18：更新顶部进度条与剩余词数（进度 = 进行到第几个 / 总数，最后一词显示"最后一个"）
+        function updateProgressUI() {
+            var total = studyWords.length;
+            var idx = total ? Math.min(Math.max(studyIndex, 0), total - 1) : 0;
+            var pct = total ? ((idx + 1) / total) * 100 : 0;
+            var fill = document.getElementById('progress-fill');
+            var track = document.getElementById('progress-track');
+            var leftText = document.getElementById('progress-left-text');
+            if (fill) fill.style.width = pct.toFixed(2) + '%';
+            if (track) track.setAttribute('aria-valuenow', String(Math.round(pct)));
+            if (leftText) {
+                var left = total ? (total - idx - 1) : 0;
+                leftText.textContent = !total ? '' : (left > 0 ? '还剩 ' + left + ' 个' : '最后一个');
+            }
+        }
+
         function renderStudyWord() {
             if (studyWords.length === 0) return;
             const word = studyWords[studyIndex];
@@ -3148,6 +3196,7 @@
 
             document.getElementById('current-index').textContent = studyIndex + 1;
             document.getElementById('total-words').textContent = studyWords.length;
+            updateProgressUI(); // 18：同步进度条与剩余词数
 
             // 「忘记了」按钮状态：当前词已达3次上限则禁用
             var canForget = (forgetCounts[word.id] || 0) < 3;
@@ -3163,7 +3212,7 @@
             var fc = document.getElementById('forget-count');
             if (fc) {
                 if (forgetClicks > 0) {
-                    fc.style.display = 'inline';
+                    fc.style.display = 'inline-block';
                     fc.textContent = '🔁 ' + forgetClicks;
                 } else {
                     fc.style.display = 'none';
@@ -3762,7 +3811,7 @@
             // 刷新 🔁 计数与按钮状态（第3次点击后立刻变灰）
             var fc = document.getElementById('forget-count');
             if (fc && forgetClicks > 0) {
-                fc.style.display = 'inline';
+                fc.style.display = 'inline-block';
                 fc.textContent = '🔁 ' + forgetClicks;
             }
             var canForget = forgetCounts[word.id] < 3;
@@ -3791,12 +3840,15 @@
             // 退出时标记最后停留的词（如果看过释义则已标记，这里补充翻页未标记的情况）
             // 注意：不标记最后一个词，因为用户可能只是打开没看就退出了
             if (cardAnimTimer) { clearTimeout(cardAnimTimer); cardAnimTimer = null; } // 作废未完成的切词动画
+            var wasMidSession = studySessionOpen; // 22：本场是否进行中（完成页返回时 studySessionOpen 已为 false）
             saveStudyProgress(); // 中途退出 → 存下断点（下次进入可「继续上次」）
             flushStudyProgressPush(); // 立即推上云端（另一台设备要能读到这个断点）
             document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
             document.getElementById('page-review').classList.add('active');
             updateReviewStats();
             updateStats();
+            // 22：中途退出时安抚用户（真的存了断点才提示；完成页返回不提示）
+            if (wasMidSession) showToast('✅ 进度已保存，下次可继续');
         }
 
         // ==================== 键盘事件 ====================
