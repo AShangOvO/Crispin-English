@@ -4,7 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>单词复习助手</title>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <!-- Supabase SDK（A6）：preconnect 预热 + 锁定版本 2.118.0 + SRI 完整性校验（防止上游发新版行为突变/脚本被篡改） -->
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+    <link rel="preconnect" href="https://yqtkxpwtffiafevnkhlp.supabase.co" crossorigin>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.js" integrity="sha384-TcHRA3zBbn+Lexh5n+Oil4guNPOS3rjNDpGRAN46u/s/mB2IZ50ceC6TYDU2yvgK" crossorigin="anonymous"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         :root {
@@ -79,6 +82,11 @@
         .auth-msg {
             color: var(--success); font-size: 13px; margin-top: 10px;
             min-height: 20px; text-align: center;
+        }
+        /* ====== B1 启动恢复登录占位 ====== */
+        .auth-boot-hint {
+            text-align: center; color: var(--text-light); font-size: 14px;
+            padding: 10px 0 4px;
         }
 
         /* ====== 导航栏 ====== */
@@ -630,6 +638,16 @@
         }
         .loading-overlay.show { display: flex; }
 
+        /* ====== B2 首屏骨架屏（替代数据加载期间的全屏遮罩）====== */
+        .sk-bar {
+            height: 16px; margin-bottom: 14px; border-radius: 6px;
+            background: #E9EEF5; animation: sk-pulse 1.2s ease-in-out infinite;
+        }
+        .sk-bar.sk-line { height: 13px; }
+        .sk-bar:last-child { margin-bottom: 0; }
+        @keyframes sk-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        @media (prefers-reduced-motion: reduce) { .sk-bar { animation: none; } }
+
         /* ====== 响应式 ====== */
         @media (max-width: 768px) {
             .nav-content {
@@ -735,7 +753,13 @@
 
     <!-- ====== 认证界面 ====== -->
     <div id="auth-screen">
-        <div class="auth-card">
+        <!-- B1 启动占位：恢复登录期间显示这张卡，避免已登录用户先看到登录表单闪现 -->
+        <div class="auth-card" id="auth-boot-card">
+            <div class="auth-logo">📚</div>
+            <div class="auth-title">单词复习助手</div>
+            <div class="auth-boot-hint">⏳ 正在恢复登录…</div>
+        </div>
+        <div class="auth-card" id="auth-form-card" style="display:none">
             <div class="auth-logo">📚</div>
             <div class="auth-title">单词复习助手</div>
             <div class="auth-tabs">
@@ -781,12 +805,33 @@
         </nav>
 
         <div class="container">
+            <!-- B2 首屏骨架屏：数据加载期间显示，替代全屏遮罩 -->
+            <div id="boot-skeleton" style="display:none" aria-hidden="true">
+                <div class="card">
+                    <div class="sk-bar" style="width:28%"></div>
+                    <div class="sk-bar sk-line" style="width:100%"></div>
+                </div>
+                <div class="card">
+                    <div class="sk-bar" style="width:22%"></div>
+                    <div class="sk-bar sk-line" style="width:100%"></div>
+                    <div class="sk-bar sk-line" style="width:92%"></div>
+                    <div class="sk-bar sk-line" style="width:64%"></div>
+                </div>
+            </div>
+            <!-- A2 加载失败卡片：失败时替代页面显示，避免把"加载失败"伪装成"暂无单词" -->
+            <div class="card" id="load-error-card" style="display:none">
+                <div class="empty-state">
+                    <div class="empty-icon">⚠️</div>
+                    <div class="empty-text" id="load-error-text">数据加载失败</div>
+                    <button type="button" class="btn btn-primary" id="load-retry-btn" onclick="retryLoadWords()">🔄 重新加载</button>
+                </div>
+            </div>
             <!-- 导入页面 -->
             <div id="page-import" class="page active">
                 <div class="card">
                     <div class="card-title">📅 选择日期</div>
                     <div class="date-selector">
-                        <input type="date" id="import-date" class="date-input" onchange="renderWordList()">
+                        <input type="date" id="import-date" class="date-input" onchange="saveImportDate(this.value);renderWordList()">
                         <button class="btn btn-outline btn-sm" onclick="setToday();renderWordList()">今天</button>
                     </div>
                 </div>
@@ -1089,6 +1134,9 @@
         // ==================== 全局状态 ====================
         var words = [];
         var currentUser = null;
+        var sessionEpoch = 0;        // B5：登录会话代次（登出/重新登录递增，用于作废过期的异步加载结果）
+        var dataLoadFailed = false;  // A2：单词加载失败态（显示错误卡片+重试，而不是空列表）
+        var bootInProgress = false;  // B2/B5：首屏加载进行中（期间不允许切换页面）
         var currentEditId = null;
         var studyWords = [];
         var studyIndex = 0;
@@ -1269,7 +1317,7 @@
 
         async function handleAuth() {
             const username = document.getElementById('auth-username').value.trim();
-            const password = document.getElementById('auth-password').value.trim();
+            const password = document.getElementById('auth-password').value; // A4：密码不 trim（首尾空格不能悄悄被吞掉）
             const errorEl = document.getElementById('auth-error');
             const msgEl = document.getElementById('auth-msg');
             errorEl.textContent = '';
@@ -1278,6 +1326,7 @@
             if (!username) { errorEl.textContent = '请填写用户名'; return; }
             if (!/^[a-zA-Z0-9_]+$/.test(username)) { errorEl.textContent = '用户名只能包含字母、数字和下划线'; return; }
             if (!password) { errorEl.textContent = '请填写密码'; return; }
+            if (password !== password.trim()) { errorEl.textContent = '密码首尾不能有空格，请检查后重试'; return; }
             if (password.length < 6) { errorEl.textContent = '密码至少需要6位'; return; }
 
             const email = usernameToEmail(username);
@@ -1355,61 +1404,166 @@
             return map[msg] || msg;
         }
 
-        async function signOut() {
-            await supabaseClient.auth.signOut();
+        // A3：退出后重置登录表单（否则按钮会停留在上次"登录中..."的禁用状态，必须刷新才能再登录）
+        function resetAuthFormAfterLogout() {
+            var btn = document.getElementById('auth-submit-btn');
+            if (btn) { btn.disabled = false; btn.textContent = authMode === 'login' ? '登录' : '注册'; }
+            var errEl = document.getElementById('auth-error');
+            if (errEl) errEl.textContent = '';
+            var msgEl = document.getElementById('auth-msg');
+            if (msgEl) msgEl.textContent = '';
+            var passEl = document.getElementById('auth-password');
+            if (passEl) passEl.value = '';
+        }
+
+        // 进入"未登录"状态的统一处理（本页退出 / 其他标签页退出 / 令牌失效共用）
+        function enterLoggedOutState() {
+            sessionEpoch++; // B5：作废仍在进行中的加载结果，防止旧账号数据写入或渲染
             currentUser = null;
             words = [];
+            dataLoadFailed = false;
+            hideLoadError();
+            resetAuthFormAfterLogout();
             document.getElementById('main-app').style.display = 'none';
             document.getElementById('auth-screen').style.display = 'flex';
+            showAuthForm();
+        }
+
+        async function signOut() {
+            try {
+                if (supabaseClient) await supabaseClient.auth.signOut();
+            } catch (e) {
+                console.warn('退出登录请求失败（本地状态仍会清理）:', e);
+            }
+            enterLoggedOutState();
+        }
+
+        // B1：启动时先显示"正在恢复登录…"，确定没有会话后再切换到登录表单
+        function showAuthForm() {
+            var boot = document.getElementById('auth-boot-card');
+            var card = document.getElementById('auth-form-card');
+            if (boot) boot.style.display = 'none';
+            if (card) card.style.display = '';
         }
 
         async function initAuth() {
-            if (!supabaseLoaded || !supabaseClient) return;
+            if (!supabaseLoaded || !supabaseClient) { showAuthForm(); return; }
             try {
                 const { data: { session } } = await supabaseClient.auth.getSession();
                 if (session) {
                     currentUser = session.user;
                     await showApp();
+                } else {
+                    showAuthForm();
                 }
             } catch (e) {
                 console.error('初始化失败:', e);
+                showAuthForm(); // 恢复失败时退回登录表单，用户可手动登录
             }
 
-            supabaseClient.auth.onAuthStateChange((event, session) => {
-                if (event === 'SIGNED_OUT') {
-                    currentUser = null;
-                    document.getElementById('main-app').style.display = 'none';
-                    document.getElementById('auth-screen').style.display = 'flex';
-                }
+            supabaseClient.auth.onAuthStateChange((event) => {
+                if (event === 'SIGNED_OUT') enterLoggedOutState(); // 含其他标签页登出 / 令牌失效
             });
         }
 
         // ==================== 显示应用 ====================
+        var bootPrevPageId = null; // 骨架屏显示前的活动页面（加载结束后恢复它）
+        // B2：首屏骨架屏（替代全屏遮罩；遮罩保留给导入/保存等写操作）
+        function showBootSkeleton(show) {
+            bootInProgress = show;
+            var el = document.getElementById('boot-skeleton');
+            if (show) {
+                var act = document.querySelector('.page.active');
+                bootPrevPageId = act ? act.id : 'page-import';
+                document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
+                if (el) el.style.display = '';
+            } else {
+                if (el) el.style.display = 'none';
+                // 恢复骨架显示前的页面（从错误态重试成功时默认回到导入页）
+                if (!document.querySelector('.page.active')) {
+                    var target = document.getElementById(bootPrevPageId || 'page-import');
+                    if (target) target.classList.add('active');
+                }
+            }
+        }
+
+        // A2：加载失败 → 错误卡片 + 重试按钮（隐藏所有页面，避免把失败伪装成"暂无单词"）
+        function showLoadError(message) {
+            document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
+            var textEl = document.getElementById('load-error-text');
+            if (textEl) textEl.textContent = message || '数据加载失败';
+            var card = document.getElementById('load-error-card');
+            if (card) card.style.display = '';
+            var btn = document.getElementById('load-retry-btn');
+            if (btn) { btn.disabled = false; btn.textContent = '🔄 重新加载'; }
+        }
+        function hideLoadError() {
+            var card = document.getElementById('load-error-card');
+            if (card) card.style.display = 'none';
+        }
+        // A2：错误卡片上的「重新加载」按钮
+        async function retryLoadWords() {
+            if (!currentUser) { location.reload(); return; }
+            var btn = document.getElementById('load-retry-btn');
+            if (btn) { btn.disabled = true; btn.textContent = '加载中...'; }
+            await showApp();
+            // 若这次仍失败，showLoadError 已把按钮恢复为可点击状态
+        }
+
+        // A1：把加载错误的英文消息翻译成用户能看懂的中文
+        function friendlyLoadError(err) {
+            var raw = (err && err.message) ? String(err.message) : '';
+            if (!raw || /fail|fetch|network|timeout|超时|load failed|未就绪/i.test(raw)) {
+                return '网络连接失败，请检查网络后点击「重新加载」';
+            }
+            if (/jwt|token|expired|401|not authenticated|invalid claim/i.test(raw)) {
+                return '登录状态已过期，请刷新页面后重新登录';
+            }
+            return '数据加载失败：' + raw;
+        }
+
         async function showApp() {
+            var epoch = ++sessionEpoch; // B5：本次加载的会话代次（期间登出/重新登录会让它过期）
+            if (!currentUser) return;
             try {
                 document.getElementById('auth-screen').style.display = 'none';
                 document.getElementById('main-app').style.display = 'block';
                 document.getElementById('user-email').textContent = emailToUsername(currentUser.email);
 
-                setToday();
-                showLoading(true);
+                restoreImportDate(); // B3：恢复上次选择的日期（无记录则今天）
+                dataLoadFailed = false;
+                showBootSkeleton(true);
+
+                var loadOk = false;
+                var loadErrMsg = '';
                 try {
-                    await loadWords();
+                    loadOk = await loadWords(epoch); // A1：内部带超时 + 自动重试
                 } catch (e) {
-                    showToast('加载单词数据失败，请刷新重试');
+                    loadErrMsg = friendlyLoadError(e);
                 }
-                showLoading(false);
+                if (epoch !== sessionEpoch) return; // 期间已登出/重新登录 → 本次结果作废
 
-                renderWordList();
-                updateReviewStats();
-                updateStats();
+                if (!loadOk) { // A2：加载失败 → 错误卡片（而不是空列表）
+                    showBootSkeleton(false);
+                    dataLoadFailed = true;
+                    showLoadError(loadErrMsg);
+                    return;
+                }
 
-                // 迁移本地数据（失败不影响主功能）
+                // B4：先把旧的本地数据迁移进云端，再渲染首帧（避免列表先出现又突变的跳动）
                 try {
                     await migrateLocalData();
                 } catch (e) { /* ignore */ }
+                if (epoch !== sessionEpoch) return;
+
+                showBootSkeleton(false);
+                hideLoadError();
+                renderWordList();
+                updateReviewStats();
+                updateStats();
             } catch (err) {
-                showLoading(false);
+                if (epoch !== sessionEpoch) return;
+                showBootSkeleton(false);
                 showToast('加载失败: ' + err.message);
             }
         }
@@ -1465,29 +1619,57 @@
         }
 
         // ==================== 数据操作（Supabase） ====================
-        async function loadWords() {
-            // 分页拉取：Supabase 默认每页最多 1000 行，超过会静默截断（漏词）。
-            // 按 date 降序 + id 降序稳定排序，翻页不漏不重。
-            const PAGE_SIZE = 1000;
+        // A1：每页 1000（Supabase 默认上限，超过会静默截断漏词）；单次请求 12 秒超时；失败最多重试 2 次
+        var LOAD_PAGE_SIZE = 1000;
+        var LOAD_TIMEOUT_MS = 12000;
+        var LOAD_MAX_ATTEMPTS = 3;
+
+        function delay(ms) {
+            return new Promise(function(resolve) { setTimeout(resolve, ms); });
+        }
+
+        // 拉取一页单词：超时保护 + 退避重试（1s → 3s）；最终仍失败则抛错，由上层展示错误卡片
+        async function fetchWordsPage(from) {
+            if (!supabaseClient) throw new Error('网络组件未就绪，请刷新页面重试'); // SDK 未加载时给可读提示
+            var lastErr = null;
+            for (var attempt = 0; attempt < LOAD_MAX_ATTEMPTS; attempt++) {
+                if (attempt > 0) await delay(attempt === 1 ? 1000 : 3000);
+                try {
+                    var res = await withTimeout(
+                        supabaseClient
+                            .from('words')
+                            .select('*')
+                            .order('date', { ascending: false })
+                            .order('id', { ascending: false })
+                            .range(from, from + LOAD_PAGE_SIZE - 1),
+                        LOAD_TIMEOUT_MS,
+                        '数据加载超时'
+                    );
+                    if (res && res.error) throw res.error;
+                    return (res && res.data) || [];
+                } catch (e) {
+                    lastErr = e;
+                    console.error('单词分页拉取失败（第 ' + (attempt + 1) + '/' + LOAD_MAX_ATTEMPTS + ' 次，from=' + from + '）:', e);
+                }
+            }
+            throw lastErr || new Error('数据加载失败');
+        }
+
+        // 分页加载全部单词（B5：epoch 用于作废过期的加载结果；返回 true=已写入内存）
+        async function loadWords(epoch) {
+            if (epoch === undefined) epoch = sessionEpoch;
+            // 按 date 降序 + id 降序稳定排序，翻页不漏不重
             var all = [];
             var from = 0;
             while (true) {
-                const { data, error } = await supabaseClient
-                    .from('words')
-                    .select('*')
-                    .order('date', { ascending: false })
-                    .order('id', { ascending: false })
-                    .range(from, from + PAGE_SIZE - 1);
-                if (error) {
-                    showToast('加载数据失败: ' + error.message);
-                    return;
-                }
-                const rows = data || [];
+                var rows = await fetchWordsPage(from);
                 all = all.concat(rows);
-                if (rows.length < PAGE_SIZE) break; // 不足一页 = 已取完
-                from += PAGE_SIZE;
+                if (rows.length < LOAD_PAGE_SIZE) break; // 不足一页 = 已取完
+                from += LOAD_PAGE_SIZE;
             }
+            if (epoch !== sessionEpoch) return false; // 期间已登出/重新登录 → 丢弃本次结果
             words = all;
+            return true;
         }
 
         async function addWordToDB(wordData) {
@@ -1622,8 +1804,9 @@
             if (error) throw error;
         }
 
-        // 迁移本地数据
+        // 迁移本地数据（B4：在首帧渲染前执行；期间已登出则放弃）
         async function migrateLocalData() {
+            if (!currentUser) return;
             const localData = localStorage.getItem('vocab_review_data');
             if (!localData) return;
 
@@ -1793,6 +1976,8 @@
 
         // ==================== 页面导航 ====================
         function showPage(pageName, btn) {
+            if (dataLoadFailed) { showToast('数据加载失败，请先点「重新加载」'); return; } // A2：错误态不允许切换页面
+            if (bootInProgress) { showToast('数据还在加载中，请稍候'); return; }          // B2：首屏加载中不允许切换页面
             document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
             document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
             document.getElementById('page-' + pageName).classList.add('active');
@@ -1809,8 +1994,30 @@
         }
 
         // ==================== 导入功能 ====================
+        var IMPORT_DATE_KEY = 'vocab_import_date'; // B3：记住上次选择的日期
+
+        function saveImportDate(dateStr) {
+            try { if (dateStr) localStorage.setItem(IMPORT_DATE_KEY, dateStr); } catch (e) {}
+        }
+
+        function setImportDate(dateStr) {
+            document.getElementById('import-date').value = dateStr;
+            saveImportDate(dateStr);
+        }
+
         function setToday() {
-            document.getElementById('import-date').value = localDateStr();
+            setImportDate(localDateStr());
+        }
+
+        // B3：启动时恢复上次选择的日期（无记录/格式异常 → 今天）
+        function restoreImportDate() {
+            var saved = null;
+            try { saved = localStorage.getItem(IMPORT_DATE_KEY); } catch (e) {}
+            if (saved && /^\d{4}-\d{2}-\d{2}$/.test(saved)) {
+                document.getElementById('import-date').value = saved;
+            } else {
+                setToday();
+            }
         }
 
         // 同义词标签输入
@@ -3930,8 +4137,8 @@
             var importBtn = document.querySelector('.nav-btn[onclick*="import"]');
             if (importBtn) importBtn.classList.add('active');
 
-            // 设置日期并刷新列表
-            document.getElementById('import-date').value = w.date;
+            // 设置日期并刷新列表（B3：同时记住这个日期）
+            setImportDate(w.date);
             renderWordList();
 
             // 高亮该单词
