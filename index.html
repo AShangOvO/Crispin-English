@@ -2823,15 +2823,22 @@
         var markedThisSession = {}; // 本次复习已标记的词，防止重复标记
         var requeuedFresh = {};     // 1b：本场已经「当日二刷」过的新词（防止重复排队）
 
+        // 「这个词的间隔今天已经推进过了」——同日防重复推进的唯一判定口径（标记 / 断点恢复 / 汇总共用）
+        function isAdvancedToday(w, today) {
+            if (!w) return false;
+            today = today || localDateStr();
+            return w.last_review === today && !!w.next_review && w.next_review > today;
+        }
+
         function markWordReviewed(word, revealed) {
             if (!word || markedThisSession[word.id]) return;
             markedThisSession[word.id] = true;
 
             var today = localDateStr();
             // 1a：同日防重复推进——今天已经推进过间隔的词（例如先在智能复习里通过了，
-            // 随后又用「按日期复习」看到它），本次只算练习：不升级、不写库。
-            // 判定口径与断点恢复 rebuildFromProgress 的跳过规则完全一致。
-            if (word.last_review === today && word.next_review && word.next_review > today) {
+            // 随后又用「按日期复习」看到它，或从断点恢复后翻回已复习的词），
+            // 本次只算练习：不升级、不写库。
+            if (isAdvancedToday(word, today)) {
                 return;
             }
             var oldReviewCount = word.review_count || 0; // 乐观锁旧值：写库时据此判断有没有被别的设备改过
@@ -3146,27 +3153,41 @@
                 schedulePushStudyProgress(studySlotKey(studyMeta)); // 节流推上云端（跨设备同步）
             } catch (e) {}
         }
-        // 用存档重建队列：过滤已被删除的词、以及「今天已经推进过间隔」的词，按 currentId 精确定位断点
+        // 用存档重建队列：只丢掉「已被删除的词」，其余保持中断时的原始顺序与总数。
+        // 【断裂断点修复】旧版这里会把「今天已经推进过间隔」的词直接从队列里剔除，于是：
+        //   ① 恢复后队列凭空变短（例如 200 → 170），用户看到「待复习单词少了好多」；
+        //   ② currentId 一旦被剔除，idx 又退回 p.index，断点就落到别的词上
+        //      → 「再进去的位置和退出时不是同一个词」。
+        // 现在保留完整队列（同一天重复推进由 markWordReviewed 的「同日守卫」拦住，
+        // 不会把间隔算两次），doneToday 只用于提示：断点之前已经复习过几个。
         function rebuildFromProgress(p) {
             var byId = {};
             for (var i = 0; i < words.length; i++) byId[words[i].id] = words[i];
-            var today = localDateStr();
             var list = [];
-            var doneToday = 0; // 今天已经推进过间隔、无需再练的词数
             for (var j = 0; j < p.ids.length; j++) {
                 var w = byId[p.ids[j]];
-                if (!w) continue; // 词已被删除 → 丢掉
-                // 今天已经推进过间隔的词（例如已在电脑上复习完）不再留在队列里：
-                // 否则恢复旧断点后会在同一天把它的间隔再推进一次
-                if (w.last_review === today && w.next_review && w.next_review > today) { doneToday++; continue; }
+                if (!w) continue; // 词已被删除 → 丢掉（唯一允许缩短队列的情况）
                 list.push(w);
             }
-            if (list.length === 0) return { valid: false, doneToday: doneToday };
+            if (list.length === 0) return { valid: false, doneToday: 0 };
             var idx = -1;
-            if (p.currentId) {
-                for (var k = 0; k < list.length; k++) { if (list[k].id === p.currentId) { idx = k; break; } }
+            var savedIdx = (typeof p.index === 'number' && p.index >= 0 && p.index < list.length) ? p.index : -1;
+            // ① 首选：存档里的位置本身与 currentId 对得上 → 直接用（能区分「二刷排在队尾」的重复词）
+            if (savedIdx >= 0 && (!p.currentId || list[savedIdx].id === p.currentId)) idx = savedIdx;
+            // ② 其次：从存档位置向前找同一个词（前面有词被删时位置会平移）
+            if (idx < 0 && p.currentId) {
+                var from = savedIdx >= 0 ? savedIdx : 0;
+                for (var k = from; k >= 0; k--) { if (list[k].id === p.currentId) { idx = k; break; } }
+                if (idx < 0) { // 再兜底：整条队列里找第一个出现的
+                    for (var k2 = 0; k2 < list.length; k2++) { if (list[k2].id === p.currentId) { idx = k2; break; } }
+                }
             }
             if (idx < 0) idx = Math.min(Math.max(p.index || 0, 0), list.length - 1);
+            var today = localDateStr();
+            var doneToday = 0; // 断点之前已经推进过间隔的词（提示用，不剔除）
+            for (var d = 0; d < idx; d++) {
+                if (isAdvancedToday(list[d], today)) doneToday++;
+            }
             return { valid: true, list: list, index: idx, doneToday: doneToday };
         }
 
@@ -3185,7 +3206,8 @@
             var src = meta.mode === 'date' ? ('按日期复习 ' + (meta.dateKey || ''))
                     : (meta.mode === 'leech' ? '顽固词集中复习' : '智能复习');
             document.getElementById('resume-desc').textContent =
-                src + '断点：第 ' + (rebuilt.index + 1) + ' / ' + rebuilt.list.length + ' 个';
+                src + '断点：第 ' + (rebuilt.index + 1) + ' / ' + rebuilt.list.length + ' 个'
+                + (rebuilt.doneToday > 0 ? '（前面 ' + rebuilt.doneToday + ' 个今天已复习过）' : '');
             document.getElementById('resume-extra').textContent =
                 (cur ? '当前单词：' + cur.word + '　' : '') + '（进度保存于 ' + when + ageText + '）';
             document.getElementById('resume-modal').classList.add('show');
@@ -3261,14 +3283,14 @@
             if (saved) {
                 var rebuilt = rebuildFromProgress(saved);
                 if (rebuilt.valid) { // 问用户：继续 or 重来
-                    if (rebuilt.doneToday > 0) syncTips.push('跳过 ' + rebuilt.doneToday + ' 个今天已复习的词');
+                    if (rebuilt.doneToday > 0) syncTips.push('断点前有 ' + rebuilt.doneToday + ' 个词今天已复习过（不会重复推进）');
                     if (syncTips.length) showToast(syncTips.join('，'));
                     showResumeDialog(saved, rebuilt, wordList, meta);
                     return;
                 }
-                if (rebuilt.doneToday > 0) syncTips.push('断点里的单词今天都已复习过');
+                if (syncTips.length) syncTips.push('旧断点里的单词已被删除，断点作废');
                 if (syncTips.length) showToast(syncTips.join('，'));
-                clearStudyProgress(meta); // 队列里的词全被删了 / 今天都复习完了 → 存档作废
+                clearStudyProgress(meta); // 队列里的词全被删了 → 存档作废
             }
             if (!wordList || wordList.length === 0) { // 到期词为空且无可继续的断点
                 if (meta.mode === 'smart') showToast('今天没有需要复习的单词，太棒了！');
@@ -3503,8 +3525,11 @@
 
         function prevWord() {
             if (studyIndex > 0) {
-                // 离开当前词（「忘记了」的词→移到队尾不标记；正常词→标记已复习）
-                leaveCurrentWord();
+                // 回看上一个词：只移动位置。
+                // 【修复】以前这里走 leaveCurrentWord()，等于「往回滑一次/按一下 ← 」就把当前词
+                // 判为已复习（间隔 +1、当天从待复习池里消失）——这是「待复习单词莫名变少」的
+                // 另一个来源。现在回看不再改变复习状态；要推进调度请在下一个词上往前滑。
+                if (cardAnimTimer) { clearTimeout(cardAnimTimer); cardAnimTimer = null; }
                 studyIndex--;
                 renderStudyWord();
             }
