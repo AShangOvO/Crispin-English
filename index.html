@@ -2122,20 +2122,30 @@
             renderSynonymTags();
         }
 
-        function addDistinguishField() {
-            const list = document.getElementById('distinguish-list');
-            const item = document.createElement('div');
-            item.className = 'distinguish-item';
-            item.innerHTML = `<input type="text" class="form-input" placeholder="单词"><input type="text" class="form-input" placeholder="释义"><button class="remove-dist" onclick="this.parentElement.remove()">×</button>`;
-            list.appendChild(item);
+        // 区分词 / 同词根词 行构建器（导入页 + 编辑弹窗共用）
+        // afterItem 传入时插到该行正下方；否则追加到末尾。返回新行元素。
+        function addPairField(containerId, itemClass, removeClass, afterItem) {
+            var list = document.getElementById(containerId);
+            if (!list) return null;
+            var item = document.createElement('div');
+            item.className = itemClass;
+            item.innerHTML = '<input type="text" class="form-input" placeholder="单词">' +
+                '<input type="text" class="form-input" placeholder="释义">' +
+                '<button type="button" class="' + removeClass + '" onclick="this.parentElement.remove()">×</button>';
+            if (afterItem && afterItem.parentElement === list) {
+                list.insertBefore(item, afterItem.nextSibling); // 插在当前行正下方
+            } else {
+                list.appendChild(item);
+            }
+            return item; // 返回新行元素（调用方负责聚焦/滚动）
         }
 
-        function addRootWordField() {
-            const list = document.getElementById('root-words-list');
-            const item = document.createElement('div');
-            item.className = 'root-word-item';
-            item.innerHTML = `<input type="text" class="form-input" placeholder="单词"><input type="text" class="form-input" placeholder="释义"><button class="remove-root" onclick="this.parentElement.remove()">×</button>`;
-            list.appendChild(item);
+        function addDistinguishField(afterItem) {
+            return addPairField('distinguish-list', 'distinguish-item', 'remove-dist', afterItem);
+        }
+
+        function addRootWordField(afterItem) {
+            return addPairField('root-words-list', 'root-word-item', 'remove-root', afterItem);
         }
 
         // ====== 重复即时提示（导入页 / 编辑弹窗共用）======
@@ -2163,16 +2173,21 @@
         bindDuplicateHint('edit-word', function() { return currentEditId; });
 
         // ==================== 释义动态行（导入页 + 编辑弹窗共用）======
-        // 添加一行（containerId=容器id, value=可选初始值）
-        function addMeaningLine(containerId, value) {
+        // 添加一行（containerId=容器id, value=可选初始值, afterLine=可选：插到该行正下方；否则追加到末尾）
+        function addMeaningLine(containerId, value, afterLine) {
             var container = document.getElementById(containerId);
-            if (!container) return;
+            if (!container) return null;
             var line = document.createElement('div');
             line.className = 'meaning-line';
             line.innerHTML = '<input type="text" class="meaning-line-input" placeholder="请输入释义">' +
                 '<button type="button" class="remove-meaning" onclick="this.parentElement.remove()">×</button>';
             if (value) line.querySelector('input').value = value;
-            container.appendChild(line);
+            if (afterLine && afterLine.parentElement === container) {
+                container.insertBefore(line, afterLine.nextSibling); // 插在当前行正下方
+            } else {
+                container.appendChild(line);
+            }
+            return line; // 返回新行元素（调用方负责聚焦/滚动）
         }
 
         // 读取所有行 → 数组（跳过空行）
@@ -2248,17 +2263,94 @@
         }
 
         // 释义框按回车自动添加下一行（事件委托，动态行通用；导入页+编辑弹窗都生效）
+        // 规则：① 输入法组合中（拼音选词）不接管回车，交给输入法；
+        //      ② 当前行为空时不新增（防连按回车堆空行）；
+        //      ③ 新行插在当前行正下方并聚焦（中途补写也顺手）
         ['meaning-lines', 'edit-meaning-lines'].forEach(function(cid) {
             var container = document.getElementById(cid);
             if (!container) return;
             container.addEventListener('keydown', function(e) {
+                if (e.key !== 'Enter') return;
+                if (e.isComposing || e.keyCode === 229) return; // ① 输入法正在选词 → 放行
+                if (!e.target || e.target.tagName !== 'INPUT') return; // × 按钮等：保留回车默认行为（可触发删除/聚焦）
+                var line = e.target.closest ? e.target.closest('.meaning-line') : null;
+                if (!line || line.parentElement !== container) return;
+                if (!e.target.value.trim()) return; // ② 空行不新增（不吞回车）
+                e.preventDefault();
+                var newLine = addMeaningLine(cid, '', line); // ③ 插在当前行之后
+                var input = newLine && newLine.querySelector('.meaning-line-input');
+                if (input) {
+                    input.focus();
+                    if (input.scrollIntoView) input.scrollIntoView({ block: 'nearest' });
+                }
+            });
+        });
+
+        // ====== 区分词 / 同词根词：行内两格快捷操作（导入页 + 编辑弹窗共用）======
+        // ① ←/→：光标已在文本边界时，在本行两格间切换（不干扰正常光标移动、Shift 选择、输入法）
+        // ② 回车：单词框 → 跳到本行释义框；释义框 → 本行有内容则在其下方新增一行并聚焦单词框
+        var PAIR_FIELD_CONFIGS = [
+            { listId: 'distinguish-list', itemSel: '.distinguish-item', add: function(after) { return addDistinguishField(after); } },
+            { listId: 'root-words-list', itemSel: '.root-word-item', add: function(after) { return addRootWordField(after); } },
+            { listId: 'edit-distinguish-list', itemSel: '.distinguish-item', add: function(after) { return addEditDistinguishField(after); } },
+            { listId: 'edit-root-words-list', itemSel: '.root-word-item', add: function(after) { return addEditRootWordField(after); } }
+        ];
+        // 光标是否已在整个文本的末尾 / 开头（取不到光标信息时返回 false，保持默认行为）
+        function caretAtTextEnd(el) {
+            try { return el.selectionStart === el.selectionEnd && el.selectionEnd === el.value.length; } catch (e) { return false; }
+        }
+        function caretAtTextStart(el) {
+            try { return el.selectionStart === el.selectionEnd && el.selectionStart === 0; } catch (e) { return false; }
+        }
+        function putCaretAtEnd(el) { try { el.setSelectionRange(el.value.length, el.value.length); } catch (e) {} }
+        function putCaretAtStart(el) { try { el.setSelectionRange(0, 0); } catch (e) {} }
+
+        PAIR_FIELD_CONFIGS.forEach(function(cfg) {
+            var container = document.getElementById(cfg.listId);
+            if (!container) return;
+            container.addEventListener('keydown', function(e) {
+                if (e.isComposing || e.keyCode === 229) return; // 输入法组合中：全部放行（含选词回车）
+                var item = e.target.closest ? e.target.closest(cfg.itemSel) : null;
+                if (!item || item.parentElement !== container) return;
+                var inputs = item.querySelectorAll('input');
+                if (inputs.length < 2) return;
+                var idx = Array.prototype.indexOf.call(inputs, e.target);
+                if (idx < 0) return;
+                var noModifier = !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey;
+
+                // ① ←/→ 行内切换（只在光标贴边时接管，否则保留正常的文字内移动/选择）
+                if (e.key === 'ArrowRight' && noModifier && idx === 0) {
+                    if (caretAtTextEnd(e.target)) {
+                        e.preventDefault();
+                        inputs[1].focus();
+                        putCaretAtStart(inputs[1]);
+                    }
+                    return;
+                }
+                if (e.key === 'ArrowLeft' && noModifier && idx === 1) {
+                    if (caretAtTextStart(e.target)) {
+                        e.preventDefault();
+                        inputs[0].focus();
+                        putCaretAtEnd(inputs[0]);
+                    }
+                    return;
+                }
+
+                // ② 回车：单词框 → 释义框；释义框 → 新增下一行
                 if (e.key === 'Enter') {
                     e.preventDefault();
-                    var line = e.target.closest ? e.target.closest('.meaning-line') : null;
-                    if (line && line.parentElement === container) {
-                        addMeaningLine(cid);
-                        var inputs = container.querySelectorAll('.meaning-line-input');
-                        inputs[inputs.length - 1].focus();
+                    if (idx === 0) {
+                        inputs[1].focus();
+                        putCaretAtStart(inputs[1]);
+                        return;
+                    }
+                    var hasContent = (inputs[0].value + inputs[1].value).trim() !== '';
+                    if (!hasContent) return; // 整行皆空：不新增（防连按回车堆空行）
+                    var newItem = cfg.add(item);
+                    var firstInput = newItem && newItem.querySelector('input');
+                    if (firstInput) {
+                        firstInput.focus();
+                        if (firstInput.scrollIntoView) firstInput.scrollIntoView({ block: 'nearest' });
                     }
                 }
             });
@@ -2411,20 +2503,12 @@
             renderEditSynonymTags();
         }
 
-        function addEditDistinguishField() {
-            const list = document.getElementById('edit-distinguish-list');
-            const item = document.createElement('div');
-            item.className = 'distinguish-item';
-            item.innerHTML = `<input type="text" class="form-input" placeholder="单词"><input type="text" class="form-input" placeholder="释义"><button class="remove-dist" onclick="this.parentElement.remove()">×</button>`;
-            list.appendChild(item);
+        function addEditDistinguishField(afterItem) {
+            return addPairField('edit-distinguish-list', 'distinguish-item', 'remove-dist', afterItem);
         }
 
-        function addEditRootWordField() {
-            const list = document.getElementById('edit-root-words-list');
-            const item = document.createElement('div');
-            item.className = 'root-word-item';
-            item.innerHTML = `<input type="text" class="form-input" placeholder="单词"><input type="text" class="form-input" placeholder="释义"><button class="remove-root" onclick="this.parentElement.remove()">×</button>`;
-            list.appendChild(item);
+        function addEditRootWordField(afterItem) {
+            return addPairField('edit-root-words-list', 'root-word-item', 'remove-root', afterItem);
         }
 
         function editWord(id) {
